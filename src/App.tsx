@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   isPermissionGranted,
   requestPermission,
@@ -90,6 +91,7 @@ type NotifySettings = {
   notifyDone: boolean; // 长任务完成（busy/shell → idle）
   notifyWaiting: boolean; // 等待输入（→ waiting）
   thresholdSec: number; // 完成通知的最小 busy 时长
+  dingSec: number; // 提示音持续时长（循环 ding）
   mute: boolean; // 静音（关声音，仍弹窗）
 };
 
@@ -97,6 +99,7 @@ const DEFAULT_SETTINGS: NotifySettings = {
   notifyDone: true,
   notifyWaiting: true,
   thresholdSec: 30,
+  dingSec: 2.5,
   mute: false,
 };
 
@@ -111,27 +114,34 @@ function loadSettings(): NotifySettings {
 }
 
 // ── 提示音（WebAudio 合成，无需音频文件）──
+// 用 Web Audio 自带时钟一次性调度整段循环 ding，不依赖 setTimeout（后台会被限流）。
 let audioCtx: AudioContext | null = null;
-function playDing(kind: "done" | "waiting") {
+function playDing(kind: "done" | "waiting", durationSec = 2.5) {
   try {
     audioCtx = audioCtx || new AudioContext();
     const ctx = audioCtx;
-    const t0 = ctx.currentTime;
+    if (ctx.state === "suspended") ctx.resume();
     const notes = kind === "done" ? [660, 990] : [990, 660];
-    notes.forEach((freq, i) => {
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = "sine";
-      o.frequency.value = freq;
-      const start = t0 + i * 0.13;
-      g.gain.setValueAtTime(0.0001, start);
-      g.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, start + 0.2);
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.start(start);
-      o.stop(start + 0.22);
-    });
+    const cycle = 0.5; // 每个 ding 周期 0.5s（0.4s 双音 + 0.1s 间隔）
+    const total = Math.max(0.4, durationSec);
+    const t0 = ctx.currentTime;
+    for (let off = 0; off < total; off += cycle) {
+      const base = t0 + off;
+      notes.forEach((freq, i) => {
+        const o = ctx.createOscillator();
+        const g = ctx.createGain();
+        o.type = "sine";
+        o.frequency.value = freq;
+        const start = base + i * 0.13;
+        g.gain.setValueAtTime(0.0001, start);
+        g.gain.exponentialRampToValueAtTime(0.18, start + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, start + 0.2);
+        o.connect(g);
+        g.connect(ctx.destination);
+        o.start(start);
+        o.stop(start + 0.22);
+      });
+    }
   } catch {
     /* 音频不可用则忽略 */
   }
@@ -147,8 +157,6 @@ async function notify(title: string, body: string) {
   if (await ensurePermission()) sendNotification({ title, body });
 }
 
-type Tracked = { status: string | null; active: boolean; busySince?: number };
-
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -159,64 +167,48 @@ function App() {
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
 
-  const prevRef = useRef<Map<string, Tracked>>(new Map());
-  const seededRef = useRef(false);
+  // 给事件监听读最新设置用（监听只订阅一次，避免重订阅）
   const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("cd-theme", theme);
   }, [theme]);
 
+  // 后端检测到翻转时 emit "notify-ding"，前端补一段循环提示音（弹窗由后端发）。
   useEffect(() => {
-    settingsRef.current = settings;
+    const un = listen<string>("notify-ding", (e) => {
+      const cfg = settingsRef.current;
+      if (cfg.mute) return;
+      playDing(e.payload === "waiting" ? "waiting" : "done", cfg.dingSec);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
+  // 通知检测在 Rust 后端常驻线程里做（webview 后台会被限流/冻结 setInterval，
+  // 放前端会漏发）。这里只把配置推给后端 + 持久化到 localStorage。
+  useEffect(() => {
     localStorage.setItem("cd-notify", JSON.stringify(settings));
+    invoke("set_notify_config", {
+      cfg: {
+        enabled: settings.notifyDone || settings.notifyWaiting,
+        done: settings.notifyDone,
+        waiting: settings.notifyWaiting,
+        threshold_ms: settings.thresholdSec * 1000,
+      },
+    }).catch(() => {});
   }, [settings]);
 
   useEffect(() => {
     ensurePermission();
   }, []);
 
-  // 检测状态翻转并触发通知（用 ref 读最新设置，避免重建轮询）
-  function detectTransitions(data: Session[]) {
-    const cfg = settingsRef.current;
-    const prev = prevRef.current;
-    const next = new Map<string, Tracked>();
-    const now = Date.now();
-
-    for (const s of data) {
-      const p = prev.get(s.file);
-      const active = s.status === "busy" || s.status === "shell";
-      // 进入活动态时记录起点；活动态内部切换（busy↔shell）保持起点不变
-      const busySince = active ? (p?.active ? p.busySince : now) : undefined;
-      next.set(s.file, { status: s.status, active, busySince });
-
-      if (!seededRef.current) continue; // 首轮只做种子，不通知
-
-      // 长任务完成：活动 → idle，且 busy 时长达阈值
-      if (p?.active && s.status === "idle" && cfg.notifyDone) {
-        const dur = p.busySince ? now - p.busySince : 0;
-        if (dur >= cfg.thresholdSec * 1000) {
-          notify(`✅ ${s.project ?? "会话"} · 任务完成`, `用时 ${fmtDuration(dur)}`);
-          if (!cfg.mute) playDing("done");
-        }
-      }
-
-      // 等待输入：进入 waiting（不受阈值限制，立即提醒）
-      if (s.status === "waiting" && p?.status !== "waiting" && cfg.notifyWaiting) {
-        notify(`⏳ ${s.project ?? "会话"} · 等待你的输入`, s.cwd ?? "");
-        if (!cfg.mute) playDing("waiting");
-      }
-    }
-
-    prevRef.current = next;
-    seededRef.current = true;
-  }
-
   async function refresh() {
     try {
       const data = await invoke<Session[]>("list_sessions");
-      detectTransitions(data);
       setSessions(data);
       setError(null);
       setLastSync(Date.now());
@@ -233,7 +225,7 @@ function App() {
 
   function testNotify() {
     notify("🔔 ClaudeDeck 测试通知", "通知和声音正常工作");
-    if (!settings.mute) playDing("done");
+    if (!settings.mute) playDing("done", settings.dingSec);
   }
 
   const liveCount = sessions.filter((s) => s.alive && !s.parse_error).length;
@@ -309,6 +301,24 @@ function App() {
                     }
                   />
                   静音（只弹窗不响铃）
+                </label>
+                <label className="row-opt indent">
+                  提示音时长
+                  <input
+                    type="number"
+                    min={0.5}
+                    step={0.5}
+                    className="num"
+                    disabled={settings.mute}
+                    value={settings.dingSec}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        dingSec: Math.max(0.5, Number(e.target.value) || 0.5),
+                      }))
+                    }
+                  />
+                  秒
                 </label>
                 <button className="test-btn" onClick={testNotify}>
                   发送测试通知
