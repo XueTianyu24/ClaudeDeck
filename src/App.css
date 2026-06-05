@@ -1,4 +1,6 @@
-:root {
+/* 默认 = 深色（无 data-theme 时也生效） */
+:root,
+:root[data-theme="dark"] {
   --bg: #0f1117;
   --panel: #161922;
   --panel-2: #1c2030;
@@ -10,6 +12,28 @@
   --red: #ef4444;
   --amber: #f59e0b;
   --blue: #60a5fa;
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #eef1f5;
+  --border: #dde1e8;
+  --text: #1a1d26;
+  --dim: #5f6675;
+  --green: #15a36a;
+  --gray: #9aa1ae;
+  --red: #dc2626;
+  --amber: #c2790a;
+  --blue: #2563eb;
+}
+
+:root {
+  color-scheme: dark light;
+}
+
+body {
+  transition: background 0.2s, color 0.2s;
 }
 
 * {
@@ -99,6 +123,87 @@ body {
 
 .refresh:hover {
   background: var(--border);
+}
+
+.refresh.active {
+  background: var(--border);
+  border-color: var(--green);
+}
+
+/* ── settings panel ── */
+.settings-wrap {
+  position: relative;
+}
+
+.settings-panel {
+  position: absolute;
+  top: 42px;
+  right: 0;
+  z-index: 20;
+  width: 240px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-panel h3 {
+  margin: 0 0 2px;
+  font-size: 13px;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.row-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.row-opt.indent {
+  padding-left: 22px;
+  color: var(--dim);
+  cursor: default;
+}
+
+.row-opt input[type="checkbox"] {
+  accent-color: var(--green);
+  width: 15px;
+  height: 15px;
+}
+
+.row-opt .num {
+  width: 52px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+
+.test-btn {
+  margin-top: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 7px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s;
+}
+
+.test-btn:hover {
+  background: var(--green);
+  color: #0b0d12;
+  border-color: var(--green);
 }
 
 /* ── banner / empty ── */
@@ -223,6 +328,24 @@ tr.muted {
 
 .badge.busy .dot {
   animation: pulse 1.4s ease-in-out infinite;
+}
+
+.badge.shell {
+  color: var(--blue);
+  background: rgba(96, 165, 250, 0.12);
+}
+
+.badge.shell .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.badge.waiting {
+  color: var(--amber);
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.badge.waiting .dot {
+  animation: pulse 1s ease-in-out infinite;
 }
 
 .badge.idle {
