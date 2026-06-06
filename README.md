@@ -48,6 +48,10 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 启动后窗口会列出当前所有 Claude Code 会话（读 `~/.claude/sessions/*.json`，3 秒刷新）：状态、项目、PID、运行时长、最后心跳、版本。点右上角 🔔 配置通知（完成阈值、等待提醒、静音、提示音时长），右上角 ☀/☾ 切换深浅色主题。
 
+长任务完成时的 Windows 桌面通知（带用时）：
+
+<p align="center"><img src="docs/desktop-notification.png" width="280" alt="Windows 11 桌面通知效果"></p>
+
 ## 手机推送配置（Bark / iPhone）
 
 <p align="center"><img src="docs/bark-notification.jpg" width="300" alt="iPhone 锁屏上的 ClaudeDeck Bark 通知效果"></p>
