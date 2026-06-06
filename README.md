@@ -73,7 +73,6 @@ npm run tauri build      # 产物在 src-tauri/target/release/bundle/
 
 - **Tauri 2 + React + TypeScript + Vite**：Rust 后端读 `~/.claude/`、常驻线程检测会话状态翻转、发系统通知；前端做面板与可视化。
 - 包体小、内存低、原生系统通知 + 本地文件访问无浏览器沙箱限制。
-- 设计与踩坑详见 [`.knowledge/DEVELOPMENT.md`](.knowledge/DEVELOPMENT.md)，数据源字段调研见 [`RESEARCH.md`](RESEARCH.md)。
 
 > ⚠️ Claude Code 的 `sessions/*.json`、`*.jsonl` 是内部私有格式、随版本漂移，无官方契约。本项目全字段容错解析 + 失败降级，但不保证对所有版本永远适配。
 

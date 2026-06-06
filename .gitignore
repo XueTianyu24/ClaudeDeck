@@ -25,3 +25,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 开发内部文档（仅本地保留，不进开源仓库）
+/CLAUDE.md
+/memory.md
+/RESEARCH.md
+/.knowledge/
+/journal/
