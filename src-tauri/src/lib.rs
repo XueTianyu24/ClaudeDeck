@@ -1084,9 +1084,9 @@ fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConf
 /// 标记字符串：用于在 settings.json 里识别「我们装的」hook，做幂等增删。
 const HOOK_MARKER: &str = "claudedeck-bark-notify";
 
-/// hook 脚本模板。`__CHANNEL__` / `__KEY__` / `__THRESHOLD_MS__` 安装时替换。
+/// hook 脚本模板。`__BARK_KEY__` / `__PUSHPLUS_TOKEN__` / `__THRESHOLD_MS__` 安装时替换。
 /// 写盘时前置 UTF-8 BOM，否则 Windows PowerShell 5.1 按 GBK 读中文会乱码。
-/// 多渠道：bark(iPhone 免费) / pushplus(微信，需实名)。
+/// 两渠道可同时启用：bark(iPhone 免费) + pushplus(微信，需实名)，各自有 key 就推。
 /// 中文编码坑：PowerShell 调 curl.exe 直传中文参数会乱码 →
 /// 用 [uri]::EscapeDataString 在 PS 里先 URL 编码、只把 ASCII 传给 curl。
 const PHONE_HOOK_SCRIPT: &str = r##"# ClaudeDeck — Claude Code hook → 手机推送(bark / pushplus)
@@ -1107,8 +1107,8 @@ $ev = if ($j) { [string]$j.hook_event_name } else { '' }
 $sid = if ($j -and $j.session_id) { [string]$j.session_id } else { 'unknown' }
 $stateDir = Join-Path $env:USERPROFILE '.claude\hooks\.state'
 $stateFile = Join-Path $stateDir $sid
-$channel = '__CHANNEL__'
-$key = '__KEY__'
+$barkKey = '__BARK_KEY__'
+$pushplusToken = '__PUSHPLUS_TOKEN__'
 $THRESHOLD_MS = __THRESHOLD_MS__
 if ($ev -eq 'UserPromptSubmit') {
     try {
@@ -1140,13 +1140,14 @@ elseif ($ev -eq 'Notification') {
 }
 else { exit 0 }
 function Enc([string]$s) { [uri]::EscapeDataString($s) }
-if ($channel -eq 'pushplus') {
-    $data = "token=$key&title=$(Enc $title)&content=$(Enc $body)"
-    & curl.exe -s -X POST "https://www.pushplus.plus/send" --data $data > $null
-}
-else {
+# 两个渠道独立，谁有 key 就推谁，可同时推
+if ($barkKey) {
     $data = "title=$(Enc $title)&body=$(Enc $body)&group=ClaudeDeck&sound=$sound"
-    & curl.exe -s -X POST "https://api.day.app/$key" --data $data > $null
+    & curl.exe -s -X POST "https://api.day.app/$barkKey" --data $data > $null
+}
+if ($pushplusToken) {
+    $data = "token=$pushplusToken&title=$(Enc $title)&content=$(Enc $body)"
+    & curl.exe -s -X POST "https://www.pushplus.plus/send" --data $data > $null
 }
 exit 0
 "##;
@@ -1156,10 +1157,10 @@ exit 0
 struct PhoneHookStatus {
     installed: bool,
     script_exists: bool,
-    /// 推送渠道：bark / pushplus / ntfy
-    channel: Option<String>,
-    /// 渠道密钥（bark key / pushplus token / ntfy topic）
-    key: Option<String>,
+    /// Bark key（iPhone），为空表示未启用该渠道
+    bark_key: Option<String>,
+    /// PushPlus token（微信），为空表示未启用该渠道
+    pushplus_token: Option<String>,
     threshold_sec: Option<i64>,
     script_path: String,
 }
@@ -1219,14 +1220,18 @@ fn push_hook(root: &mut Value, event: &str, group: Value) {
     }
 }
 
-fn write_phone_script(channel: &str, key: &str, threshold_ms: i64) -> Result<PathBuf, String> {
+fn write_phone_script(
+    bark_key: &str,
+    pushplus_token: &str,
+    threshold_ms: i64,
+) -> Result<PathBuf, String> {
     let path = phone_script_path()?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
     }
     let content = PHONE_HOOK_SCRIPT
-        .replace("__CHANNEL__", channel)
-        .replace("__KEY__", key)
+        .replace("__BARK_KEY__", bark_key)
+        .replace("__PUSHPLUS_TOKEN__", pushplus_token)
         .replace("__THRESHOLD_MS__", &threshold_ms.to_string());
     // 前置 UTF-8 BOM
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -1268,13 +1273,14 @@ fn settings_has_our_hook() -> bool {
 fn phone_hook_status() -> PhoneHookStatus {
     let script = phone_script_path().unwrap_or_default();
     let script_exists = script.exists();
-    let mut channel = None;
-    let mut key = None;
+    let mut bark_key = None;
+    let mut pushplus_token = None;
     let mut threshold_sec = None;
     if script_exists {
         if let Ok(content) = fs::read_to_string(&script) {
-            channel = extract_between(&content, "$channel = '", "'").filter(|k| !k.is_empty());
-            key = extract_between(&content, "$key = '", "'").filter(|k| !k.is_empty());
+            bark_key = extract_between(&content, "$barkKey = '", "'").filter(|k| !k.is_empty());
+            pushplus_token =
+                extract_between(&content, "$pushplusToken = '", "'").filter(|k| !k.is_empty());
             threshold_sec = extract_between(&content, "$THRESHOLD_MS = ", "\n")
                 .and_then(|s| s.trim().parse::<i64>().ok())
                 .map(|ms| ms / 1000);
@@ -1283,8 +1289,8 @@ fn phone_hook_status() -> PhoneHookStatus {
     PhoneHookStatus {
         installed: script_exists && settings_has_our_hook(),
         script_exists,
-        channel,
-        key,
+        bark_key,
+        pushplus_token,
         threshold_sec,
         script_path: script.to_string_lossy().to_string(),
     }
@@ -1306,21 +1312,21 @@ fn norm_channel(channel: &str) -> Result<String, String> {
 
 #[tauri::command]
 fn install_phone_hook(
-    channel: String,
-    key: String,
+    bark_key: String,
+    pushplus_token: String,
     threshold_sec: i64,
 ) -> Result<PhoneHookStatus, String> {
-    let channel = norm_channel(&channel)?;
-    let key = key.trim().to_string();
-    if key.is_empty() {
-        return Err("密钥 / 主题不能为空".into());
+    let bark_key = bark_key.trim().to_string();
+    let pushplus_token = pushplus_token.trim().to_string();
+    if bark_key.is_empty() && pushplus_token.is_empty() {
+        return Err("至少填一个渠道的 key".into());
     }
     // key 不能含单引号(会破坏脚本里 '...' 包裹)
-    if key.contains('\'') {
-        return Err("密钥含非法字符".into());
+    if bark_key.contains('\'') || pushplus_token.contains('\'') {
+        return Err("key 含非法字符（单引号）".into());
     }
     let thr_ms = threshold_sec.max(0) * 1000;
-    let script = write_phone_script(&channel, &key, thr_ms)?;
+    let script = write_phone_script(&bark_key, &pushplus_token, thr_ms)?;
 
     let settings = claude_dir()?.join("settings.json");
     // 改前备份

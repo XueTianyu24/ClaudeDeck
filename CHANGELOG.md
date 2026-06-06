@@ -5,6 +5,12 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-06-07
+
+### 改进
+- **两个推送渠道可同时启用**：Bark（iPhone）和 PushPlus（微信）不再二选一，两个都填就任务完成时同时推到两端，各自独立、互不影响。
+- **通知设置面板 UI 优化**：面板加宽（240→340px），两个渠道各成一张卡片（标题 + 占满宽的输入框 + 独立测试按钮），分区更清晰。
+
 ## [0.5.0] - 2026-06-07
 
 ### 新增
@@ -52,6 +58,7 @@
 - **免安装单 exe**：Windows 11 双击即用；注册 AUMID，纯净机也能正常弹 toast。
 - 全新 app 图标与应用内 logo。
 
+[0.6.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.2.0...v0.3.0
