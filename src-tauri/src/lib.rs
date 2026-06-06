@@ -818,6 +818,257 @@ fn delete_empty_memory_dir(project: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Skill 可视化 ──────────────────────────────────────────────
+//
+// 数据源：`~/.claude/skills/<name>/SKILL.md`。标签存 app 独立文件
+// `~/.claude/.claudedeck-skill-tags.json`（{ skill名: [标签...] }），不侵入 SKILL.md。
+
+#[derive(Debug, Serialize)]
+struct SkillInfo {
+    /// 目录名，等同 skill id
+    name: String,
+    /// frontmatter 的 name 字段（展示标题；通常同目录名）
+    title: Option<String>,
+    description: Option<String>,
+    dir: String,
+    /// 目录顶层文件数（除 SKILL.md 外是否带脚本 / 资源的直观指标）
+    file_count: usize,
+    /// 是否含 references/ 子目录
+    has_references: bool,
+    mtime: i64,
+    /// 用户打的标签（来自独立标签文件）
+    tags: Vec<String>,
+}
+
+fn skills_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude").join("skills"))
+}
+
+fn skill_tags_path() -> Result<PathBuf, String> {
+    Ok(claude_dir()?.join(".claudedeck-skill-tags.json"))
+}
+
+fn read_all_skill_tags() -> HashMap<String, Vec<String>> {
+    skill_tags_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// 解析 SKILL.md frontmatter 的 name / description（顶层平铺，单行）。
+fn parse_skill_meta(content: &str) -> (Option<String>, Option<String>) {
+    let mut name = None;
+    let mut desc = None;
+    if let Some(stripped) = content.strip_prefix("---") {
+        if let Some(end) = stripped.find("\n---") {
+            for line in stripped[..end].lines() {
+                let t = line.trim();
+                if let Some(v) = t.strip_prefix("name:") {
+                    if name.is_none() {
+                        name = Some(unquote(v));
+                    }
+                } else if let Some(v) = t.strip_prefix("description:") {
+                    if desc.is_none() {
+                        desc = Some(unquote(v));
+                    }
+                }
+            }
+        }
+    }
+    (name, desc)
+}
+
+/// 统计 skill 目录顶层文件数 + 是否有 references/ 子目录。
+fn skill_file_stats(dir: &Path) -> (usize, bool) {
+    let mut files = 0;
+    let mut has_ref = false;
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.file_name().and_then(|s| s.to_str()) == Some("references") {
+                    has_ref = true;
+                }
+            } else {
+                files += 1;
+            }
+        }
+    }
+    (files, has_ref)
+}
+
+#[tauri::command]
+fn list_skills() -> Result<Vec<SkillInfo>, String> {
+    let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
+    let tags = read_all_skill_tags();
+    let mut out = Vec::new();
+    if !dir.exists() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(&dir)
+        .map_err(|e| format!("读取 skills 目录失败: {e}"))?
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue; // 跳过散落的压缩包等非目录
+        }
+        let skill_md = path.join("SKILL.md");
+        if !skill_md.exists() {
+            continue; // 没有 SKILL.md 不算有效 skill
+        }
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let content = fs::read_to_string(&skill_md).unwrap_or_default();
+        let (title, description) = parse_skill_meta(&content);
+        let (file_count, has_references) = skill_file_stats(&path);
+        let t = tags.get(&name).cloned().unwrap_or_default();
+        out.push(SkillInfo {
+            name,
+            title,
+            description,
+            dir: path.to_string_lossy().to_string(),
+            file_count,
+            has_references,
+            mtime: file_mtime_ms(&skill_md),
+            tags: t,
+        });
+    }
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+fn safe_skill_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("非法 skill 名".into());
+    }
+    Ok(())
+}
+
+/// 读某个 skill 的 SKILL.md 全文。
+#[tauri::command]
+fn read_skill(name: String) -> Result<DocView, String> {
+    safe_skill_name(&name)?;
+    let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
+    let p = dir.join(&name).join("SKILL.md");
+    let exists = p.exists();
+    let content = if exists {
+        fs::read_to_string(&p).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Ok(DocView {
+        path: p.to_string_lossy().to_string(),
+        exists,
+        mtime: if exists { file_mtime_ms(&p) } else { 0 },
+        content,
+    })
+}
+
+/// skill 目录下的一个文件 / 子目录条目（相对 skill 根的路径）。
+#[derive(Debug, Serialize)]
+struct SkillFile {
+    /// 相对 skill 根目录的路径，用 / 分隔（如 references/social.md）
+    path: String,
+    is_dir: bool,
+    /// 文件字节数（目录为 0）
+    size: u64,
+}
+
+fn collect_skill_tree(base: &Path, dir: &Path, out: &mut Vec<SkillFile>) {
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+    // 目录在前、再按名字排序，树形更清晰
+    entries.sort_by(|a, b| {
+        b.is_dir()
+            .cmp(&a.is_dir())
+            .then_with(|| a.file_name().cmp(&b.file_name()))
+    });
+    for p in entries {
+        let rel = p
+            .strip_prefix(base)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let is_dir = p.is_dir();
+        let size = if is_dir {
+            0
+        } else {
+            p.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        out.push(SkillFile {
+            path: rel,
+            is_dir,
+            size,
+        });
+        if is_dir {
+            collect_skill_tree(base, &p, out);
+        }
+    }
+}
+
+/// 列出某 skill 目录的完整文件结构（树形，供展示其组织，不读内容）。
+#[tauri::command]
+fn list_skill_files(name: String) -> Result<Vec<SkillFile>, String> {
+    safe_skill_name(&name)?;
+    let dir = skills_dir()
+        .ok_or("无法定位 ~/.claude/skills 目录")?
+        .join(&name);
+    if !dir.exists() {
+        return Err("skill 不存在".into());
+    }
+    let mut out = Vec::new();
+    collect_skill_tree(&dir, &dir, &mut out);
+    Ok(out)
+}
+
+/// 在系统文件管理器中打开该 skill 目录（方便用户直接改文件）。
+#[tauri::command]
+fn open_skill_dir(name: String) -> Result<(), String> {
+    safe_skill_name(&name)?;
+    let dir = skills_dir()
+        .ok_or("无法定位 ~/.claude/skills 目录")?
+        .join(&name);
+    if !dir.exists() {
+        return Err("目录不存在".into());
+    }
+    #[cfg(windows)]
+    let r = Command::new("explorer").arg(&dir).spawn();
+    #[cfg(target_os = "macos")]
+    let r = Command::new("open").arg(&dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = Command::new("xdg-open").arg(&dir).spawn();
+    r.map_err(|e| format!("打开文件管理器失败: {e}"))?;
+    Ok(())
+}
+
+/// 设置某 skill 的标签（空数组 = 清除该 skill 标签记录）。
+#[tauri::command]
+fn set_skill_tags(name: String, tags: Vec<String>) -> Result<(), String> {
+    safe_skill_name(&name)?;
+    let mut all = read_all_skill_tags();
+    // 去空白、去重、去空串
+    let mut cleaned: Vec<String> = Vec::new();
+    for t in tags {
+        let t = t.trim().to_string();
+        if !t.is_empty() && !cleaned.contains(&t) {
+            cleaned.push(t);
+        }
+    }
+    if cleaned.is_empty() {
+        all.remove(&name);
+    } else {
+        all.insert(name, cleaned);
+    }
+    let p = skill_tags_path()?;
+    let json = serde_json::to_string_pretty(&all).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&p, json).map_err(|e| format!("写标签文件失败: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConfig>>>) {
     if let Ok(mut g) = state.lock() {
@@ -1246,6 +1497,11 @@ pub fn run() {
             read_project_md,
             save_project_md,
             delete_empty_memory_dir,
+            list_skills,
+            read_skill,
+            list_skill_files,
+            open_skill_dir,
+            set_skill_tags,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,

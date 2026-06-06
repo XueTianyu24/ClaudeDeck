@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.4.0] - 2026-06-07
+
+### 新增
+- **技能可视化面板**（新增「技能」标签）：卡片列出 `~/.claude/skills/` 下所有 skill（名字 + 描述），点击展开看 SKILL.md 全文（Markdown 渲染）。
+- **文件结构树**：展开 skill 显示其目录组织（含 `references/` 子文件，带文件大小），一眼看清这个 skill 带了哪些附加资料。
+- **标签管理**：给 skill 打 / 删标签（存应用独立文件，不侵入 SKILL.md），支持按标签 / 未标记筛选。
+- **搜索 + 统计**：按名字 / 描述实时过滤，顶部显示技能数量。
+- **快捷操作**：每张卡片可「📂 打开目录」（资源管理器中定位 skill），并显示最近更新时间。
+
 ## [0.3.0] - 2026-06-07
 
 ### 新增
@@ -34,6 +43,7 @@
 - **免安装单 exe**：Windows 11 双击即用；注册 AUMID，纯净机也能正常弹 toast。
 - 全新 app 图标与应用内 logo。
 
+[0.4.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/XueTianyu24/ClaudeDeck/releases/tag/v0.1.0

@@ -9,6 +9,7 @@ import {
 import "./App.css";
 import logo from "./assets/logo.png";
 import MemoryView from "./MemoryView";
+import SkillView from "./SkillView";
 
 type Session = {
   pid: number | null;
@@ -183,7 +184,9 @@ function App() {
   );
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
-  const [view, setView] = useState<"sessions" | "memory">("sessions");
+  const [view, setView] = useState<"sessions" | "memory" | "skills">(
+    "sessions"
+  );
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -512,9 +515,17 @@ function App() {
         >
           记忆
         </button>
+        <button
+          className={`view-tab ${view === "skills" ? "active" : ""}`}
+          onClick={() => setView("skills")}
+        >
+          技能
+        </button>
       </div>
 
-      {view === "memory" ? (
+      {view === "skills" ? (
+        <SkillView />
+      ) : view === "memory" ? (
         <MemoryView />
       ) : error ? (
         <div className="banner err">读取失败：{error}</div>
