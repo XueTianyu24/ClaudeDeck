@@ -8,14 +8,22 @@
 
 - 📡 **会话监控** ✅ — 实时显示哪些 Claude Code 会话在运行 / 空闲 / 等待输入 / 疑似卡死，跑在哪个项目、用了多久。
 - 🔔 **完成通知** ✅ — 长任务跑完或需要授权时，**桌面弹窗 + 声音**提醒（可设阈值，过滤短问答）。
-- 📱 **手机推送** ✅（实验功能，手动配置）— 通过 Claude Code 原生 hook，把「任务完成」推到手机（**Bark / iPhone**），**应用不用开着也能收到**。
+- 📱 **手机推送** ✅ — 应用内**一键安装** Claude Code hook，把「任务完成 / 等待授权」推到手机（**Bark / iPhone**），**应用不用开着也能收到**。
 - 🧠 **记忆可视化** 🚧 — 统一面板查看 / 编辑全局 + 项目级记忆（CLAUDE.md、auto-memory），按 frontmatter 分类、`[[name]]` 渲染成关系图。开发中。
 
 ## 平台
 
 目前仅在 **Windows 11** 实测。macOS / Linux 理论可用（Tauri 跨平台），但 `~/.claude/` 路径编码规则尚未在这两个平台验证。
 
-## 安装与运行
+## 下载使用（免安装）
+
+到 [Releases](https://github.com/XueTianyu24/ClaudeDeck/releases) 下载 **`ClaudeDeck.exe`**，**Windows 11 双击即用**，免安装、免配置。
+
+- 首次运行被 Windows SmartScreen 拦截是未签名应用的正常现象 → 点「更多信息」→「仍要运行」。
+- 依赖 WebView2 运行时（Win11 自带，无需额外安装）。
+- 想要安装版（进开始菜单、可卸载）：下载 `ClaudeDeck_*_x64-setup.exe`。
+
+## 从源码运行（开发）
 
 ### 环境要求
 
@@ -43,6 +51,8 @@ npm run tauri build      # 产物在 src-tauri/target/release/bundle/
 ## 手机推送配置（Bark / iPhone）
 
 让 Claude Code 任务完成时推送到手机，**不依赖本应用常驻**——靠 Claude Code 原生 hook 在会话进程内触发。
+
+**最简单**：打开应用 → 右上角 🔔 →「📱 手机推送(Bark)」卡片，填入 Bark key → 点「安装」即可（自动写好脚本和 settings.json，可一键卸载）。以下手动步骤供不用本应用、或想自行配置时参考。
 
 1. **装 Bark**：iPhone App Store 搜 [Bark](https://github.com/Finb/Bark)，打开后首页有你的专属地址 `https://api.day.app/<你的KEY>/`，记下 `<你的KEY>`。
 2. **放脚本**：把本仓库的 [`hooks/claudedeck-bark-notify.ps1`](hooks/claudedeck-bark-notify.ps1) 复制到 `~/.claude/hooks/`，把里面 `PUT_YOUR_BARK_KEY_HERE` 改成你的 KEY。

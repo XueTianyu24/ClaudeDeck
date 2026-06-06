@@ -14,6 +14,11 @@ edition = "2021"
 name = "tauri_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# 免安装 exe 名 → ClaudeDeck.exe（对齐 tauri.conf.json 的 productName）
+[[bin]]
+name = "ClaudeDeck"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
