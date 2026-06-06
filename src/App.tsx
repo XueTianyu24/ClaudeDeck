@@ -166,6 +166,13 @@ type PhoneStatus = {
   script_path: string;
 };
 
+type EnvStatus = {
+  home_found: boolean;
+  claude_dir_exists: boolean;
+  sessions_dir_exists: boolean;
+  curl_available: boolean;
+};
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -175,6 +182,9 @@ function App() {
   );
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+
+  // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
+  const [env, setEnv] = useState<EnvStatus | null>(null);
 
   // 手机推送（Bark hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
@@ -256,6 +266,17 @@ function App() {
   }
   useEffect(() => {
     loadPhone();
+  }, []);
+
+  async function loadEnv() {
+    try {
+      setEnv(await invoke<EnvStatus>("get_env_status"));
+    } catch {
+      /* ignore */
+    }
+  }
+  useEffect(() => {
+    loadEnv();
   }, []);
 
   async function installPhone() {
@@ -404,6 +425,12 @@ function App() {
                     任务完成 / 等待授权时推到 iPhone，应用不用开着。
                     {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
                   </p>
+                  {env && !env.curl_available && (
+                    <p className="phone-msg">
+                      ⚠️ 未检测到 curl.exe，手机推送将无法工作（Win10 1803
+                      以下需手动安装 curl）
+                    </p>
+                  )}
                   <label className="row-opt">
                     Bark Key
                     <input
@@ -474,8 +501,20 @@ function App() {
 
       {sessions.length === 0 && !error ? (
         <div className="empty">
-          <p>当前没有运行中的 Claude Code 会话</p>
-          <span>启动一个 CC 会话后会自动出现在这里</span>
+          {env && !env.claude_dir_exists ? (
+            <>
+              <p>未检测到 Claude Code</p>
+              <span>
+                没有找到 <code>~/.claude</code> 目录。请确认已安装 Claude Code
+                并至少运行过一次。
+              </span>
+            </>
+          ) : (
+            <>
+              <p>当前没有运行中的 Claude Code 会话</p>
+              <span>启动一个 CC 会话后会自动出现在这里</span>
+            </>
+          )}
         </div>
       ) : (
         <div className="table-wrap">

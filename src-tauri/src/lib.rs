@@ -227,6 +227,41 @@ fn list_sessions() -> Result<Vec<SessionView>, String> {
     read_session_views()
 }
 
+/// 运行环境探测：用于前端区分「没装 CC」「装了没跑会话」，及 curl 可用性。
+#[derive(Debug, Serialize)]
+struct EnvStatus {
+    /// 能否定位到 home 目录（极端情况下 dirs 也可能拿不到）
+    home_found: bool,
+    /// `~/.claude` 是否存在（不存在 ≈ 没装/没跑过 Claude Code）
+    claude_dir_exists: bool,
+    /// `~/.claude/sessions` 是否存在（存在但空 = 装了但当前无会话）
+    sessions_dir_exists: bool,
+    /// `curl.exe` 是否可用（手机推送 hook 依赖它；老 Win10 可能缺）
+    curl_available: bool,
+}
+
+/// 检测 `curl.exe` 是否在 PATH 中可用（手机推送依赖）。
+fn curl_available() -> bool {
+    Command::new("curl.exe")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+fn get_env_status() -> EnvStatus {
+    let home = dirs::home_dir();
+    let claude = home.as_ref().map(|h| h.join(".claude"));
+    let sessions = claude.as_ref().map(|c| c.join("sessions"));
+    EnvStatus {
+        home_found: home.is_some(),
+        claude_dir_exists: claude.map(|c| c.exists()).unwrap_or(false),
+        sessions_dir_exists: sessions.map(|s| s.exists()).unwrap_or(false),
+        curl_available: curl_available(),
+    }
+}
+
 #[tauri::command]
 fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConfig>>>) {
     if let Ok(mut g) = state.lock() {
@@ -642,6 +677,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
+            get_env_status,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,
