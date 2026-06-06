@@ -1084,10 +1084,13 @@ fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConf
 /// 标记字符串：用于在 settings.json 里识别「我们装的」hook，做幂等增删。
 const HOOK_MARKER: &str = "claudedeck-bark-notify";
 
-/// hook 脚本模板。`__BARK_KEY__` / `__THRESHOLD_MS__` 安装时替换。
+/// hook 脚本模板。`__CHANNEL__` / `__KEY__` / `__THRESHOLD_MS__` 安装时替换。
 /// 写盘时前置 UTF-8 BOM，否则 Windows PowerShell 5.1 按 GBK 读中文会乱码。
-const PHONE_HOOK_SCRIPT: &str = r##"# ClaudeDeck — Claude Code hook → Bark 手机推送
-# 本文件由 ClaudeDeck 自动生成与管理，请勿手改（在应用里改 key / 阈值即可）。
+/// 多渠道：bark(iPhone 免费) / pushplus(微信，需实名)。
+/// 中文编码坑：PowerShell 调 curl.exe 直传中文参数会乱码 →
+/// 用 [uri]::EscapeDataString 在 PS 里先 URL 编码、只把 ASCII 传给 curl。
+const PHONE_HOOK_SCRIPT: &str = r##"# ClaudeDeck — Claude Code hook → 手机推送(bark / pushplus)
+# 本文件由 ClaudeDeck 自动生成与管理，请勿手改（在应用里改渠道 / key / 阈值即可）。
 $ErrorActionPreference = 'SilentlyContinue'
 # 强制 UTF-8 读 stdin：CC 写 UTF-8，5.1 的 [Console]::In 默认 GBK 会解析失败。
 $raw = ''
@@ -1104,8 +1107,8 @@ $ev = if ($j) { [string]$j.hook_event_name } else { '' }
 $sid = if ($j -and $j.session_id) { [string]$j.session_id } else { 'unknown' }
 $stateDir = Join-Path $env:USERPROFILE '.claude\hooks\.state'
 $stateFile = Join-Path $stateDir $sid
-$barkKey = '__BARK_KEY__'
-$url = "https://api.day.app/$barkKey"
+$channel = '__CHANNEL__'
+$key = '__KEY__'
 $THRESHOLD_MS = __THRESHOLD_MS__
 if ($ev -eq 'UserPromptSubmit') {
     try {
@@ -1137,8 +1140,14 @@ elseif ($ev -eq 'Notification') {
 }
 else { exit 0 }
 function Enc([string]$s) { [uri]::EscapeDataString($s) }
-$form = "title=$(Enc $title)&body=$(Enc $body)&group=ClaudeDeck&sound=$sound"
-& curl.exe -s -X POST $url --data $form > $null
+if ($channel -eq 'pushplus') {
+    $data = "token=$key&title=$(Enc $title)&content=$(Enc $body)"
+    & curl.exe -s -X POST "https://www.pushplus.plus/send" --data $data > $null
+}
+else {
+    $data = "title=$(Enc $title)&body=$(Enc $body)&group=ClaudeDeck&sound=$sound"
+    & curl.exe -s -X POST "https://api.day.app/$key" --data $data > $null
+}
 exit 0
 "##;
 
@@ -1147,7 +1156,10 @@ exit 0
 struct PhoneHookStatus {
     installed: bool,
     script_exists: bool,
-    bark_key: Option<String>,
+    /// 推送渠道：bark / pushplus / ntfy
+    channel: Option<String>,
+    /// 渠道密钥（bark key / pushplus token / ntfy topic）
+    key: Option<String>,
     threshold_sec: Option<i64>,
     script_path: String,
 }
@@ -1207,13 +1219,14 @@ fn push_hook(root: &mut Value, event: &str, group: Value) {
     }
 }
 
-fn write_phone_script(bark_key: &str, threshold_ms: i64) -> Result<PathBuf, String> {
+fn write_phone_script(channel: &str, key: &str, threshold_ms: i64) -> Result<PathBuf, String> {
     let path = phone_script_path()?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
     }
     let content = PHONE_HOOK_SCRIPT
-        .replace("__BARK_KEY__", bark_key)
+        .replace("__CHANNEL__", channel)
+        .replace("__KEY__", key)
         .replace("__THRESHOLD_MS__", &threshold_ms.to_string());
     // 前置 UTF-8 BOM
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -1255,11 +1268,13 @@ fn settings_has_our_hook() -> bool {
 fn phone_hook_status() -> PhoneHookStatus {
     let script = phone_script_path().unwrap_or_default();
     let script_exists = script.exists();
-    let mut bark_key = None;
+    let mut channel = None;
+    let mut key = None;
     let mut threshold_sec = None;
     if script_exists {
         if let Ok(content) = fs::read_to_string(&script) {
-            bark_key = extract_between(&content, "$barkKey = '", "'").filter(|k| !k.is_empty());
+            channel = extract_between(&content, "$channel = '", "'").filter(|k| !k.is_empty());
+            key = extract_between(&content, "$key = '", "'").filter(|k| !k.is_empty());
             threshold_sec = extract_between(&content, "$THRESHOLD_MS = ", "\n")
                 .and_then(|s| s.trim().parse::<i64>().ok())
                 .map(|ms| ms / 1000);
@@ -1268,7 +1283,8 @@ fn phone_hook_status() -> PhoneHookStatus {
     PhoneHookStatus {
         installed: script_exists && settings_has_our_hook(),
         script_exists,
-        bark_key,
+        channel,
+        key,
         threshold_sec,
         script_path: script.to_string_lossy().to_string(),
     }
@@ -1279,14 +1295,32 @@ fn get_phone_hook_status() -> PhoneHookStatus {
     phone_hook_status()
 }
 
+/// 校验渠道名，归一化为 bark / pushplus / ntfy。
+fn norm_channel(channel: &str) -> Result<String, String> {
+    match channel.trim().to_lowercase().as_str() {
+        "bark" => Ok("bark".into()),
+        "pushplus" => Ok("pushplus".into()),
+        other => Err(format!("不支持的推送渠道: {other}")),
+    }
+}
+
 #[tauri::command]
-fn install_phone_hook(bark_key: String, threshold_sec: i64) -> Result<PhoneHookStatus, String> {
-    let key = bark_key.trim().to_string();
+fn install_phone_hook(
+    channel: String,
+    key: String,
+    threshold_sec: i64,
+) -> Result<PhoneHookStatus, String> {
+    let channel = norm_channel(&channel)?;
+    let key = key.trim().to_string();
     if key.is_empty() {
-        return Err("Bark key 不能为空".into());
+        return Err("密钥 / 主题不能为空".into());
+    }
+    // key 不能含单引号(会破坏脚本里 '...' 包裹)
+    if key.contains('\'') {
+        return Err("密钥含非法字符".into());
     }
     let thr_ms = threshold_sec.max(0) * 1000;
-    let script = write_phone_script(&key, thr_ms)?;
+    let script = write_phone_script(&channel, &key, thr_ms)?;
 
     let settings = claude_dir()?.join("settings.json");
     // 改前备份
@@ -1339,27 +1373,48 @@ fn uninstall_phone_hook() -> Result<PhoneHookStatus, String> {
 }
 
 #[tauri::command]
-fn test_phone_push(bark_key: String) -> Result<(), String> {
-    let key = bark_key.trim();
+fn test_phone_push(channel: String, key: String) -> Result<(), String> {
+    let channel = norm_channel(&channel)?;
+    let key = key.trim();
     if key.is_empty() {
-        return Err("Bark key 不能为空".into());
+        return Err("密钥 / 主题不能为空".into());
     }
-    let url = format!("https://api.day.app/{key}");
+    let title = "🔔 ClaudeDeck 测试推送";
+    // 带时间戳：PushPlus 等渠道会拒绝「频繁推送相同内容」，每次唯一才能反复测
+    let body = format!("能收到这条就说明推送配好了 · {}", now_ms());
+
+    // Rust 的 Command 在 Windows 走宽字符，中文参数不会乱码，可直接 --data-urlencode
+    let args: Vec<String> = match channel.as_str() {
+        "pushplus" => vec![
+            "-s".into(),
+            "-X".into(),
+            "POST".into(),
+            "https://www.pushplus.plus/send".into(),
+            "--data-urlencode".into(),
+            format!("token={key}"),
+            "--data-urlencode".into(),
+            format!("title={title}"),
+            "--data-urlencode".into(),
+            format!("content={body}"),
+        ],
+        _ => vec![
+            "-s".into(),
+            "-X".into(),
+            "POST".into(),
+            format!("https://api.day.app/{key}"),
+            "--data-urlencode".into(),
+            format!("title={title}"),
+            "--data-urlencode".into(),
+            format!("body={body}"),
+            "--data-urlencode".into(),
+            "group=ClaudeDeck".into(),
+            "--data-urlencode".into(),
+            "sound=birdsong".into(),
+        ],
+    };
+
     let out = Command::new("curl.exe")
-        .args([
-            "-s",
-            "-X",
-            "POST",
-            &url,
-            "--data-urlencode",
-            "title=🔔 ClaudeDeck 测试推送",
-            "--data-urlencode",
-            "body=能收到这条就说明 Bark 配好了",
-            "--data-urlencode",
-            "group=ClaudeDeck",
-            "--data-urlencode",
-            "sound=birdsong",
-        ])
+        .args(&args)
         .output()
         .map_err(|e| format!("调用 curl 失败: {e}"))?;
     if !out.status.success() {
@@ -1369,10 +1424,11 @@ fn test_phone_push(bark_key: String) -> Result<(), String> {
         ));
     }
     let resp = String::from_utf8_lossy(&out.stdout);
+    // bark / pushplus 成功返回含 "code":200
     if resp.contains("\"code\":200") {
         Ok(())
     } else {
-        Err(format!("Bark 返回异常: {resp}"))
+        Err(format!("渠道返回异常: {resp}"))
     }
 }
 

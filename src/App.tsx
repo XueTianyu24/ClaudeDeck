@@ -163,9 +163,31 @@ async function notify(title: string, body: string) {
 type PhoneStatus = {
   installed: boolean;
   script_exists: boolean;
-  bark_key: string | null;
+  channel: string | null;
+  key: string | null;
   threshold_sec: number | null;
   script_path: string;
+};
+
+type PushChannel = "bark" | "pushplus";
+
+// 各渠道的展示信息：标签、输入框 label/placeholder、获取入口提示
+const CHANNELS: Record<
+  PushChannel,
+  { label: string; keyLabel: string; placeholder: string; hint: string }
+> = {
+  bark: {
+    label: "Bark（iPhone，免费）",
+    keyLabel: "Bark Key",
+    placeholder: "api.day.app/ 后那串",
+    hint: "iPhone 装 Bark App，首页地址 api.day.app/<KEY> 里的 KEY。完全免费。",
+  },
+  pushplus: {
+    label: "PushPlus（微信）",
+    keyLabel: "PushPlus Token",
+    placeholder: "pushplus.plus 的 token",
+    hint: "微信搜公众号「pushplus 推送加」关注 → 实名(约 4 元) → 「一对一推送」复制 token。⚠️ 记得把该服务号的「消息免打扰」关掉，否则收不到！",
+  },
 };
 
 type EnvStatus = {
@@ -191,9 +213,10 @@ function App() {
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
 
-  // 手机推送（Bark hook）状态
+  // 手机推送（多渠道 hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
-  const [barkKey, setBarkKey] = useState("");
+  const [channel, setChannel] = useState<PushChannel>("bark");
+  const [pushKey, setPushKey] = useState("");
   const [phoneThresh, setPhoneThresh] = useState(30);
   const [phoneBusy, setPhoneBusy] = useState(false);
   const [phoneMsg, setPhoneMsg] = useState<string | null>(null);
@@ -263,7 +286,9 @@ function App() {
     try {
       const st = await invoke<PhoneStatus>("get_phone_hook_status");
       setPhone(st);
-      if (st.bark_key) setBarkKey(st.bark_key);
+      if (st.channel === "bark" || st.channel === "pushplus")
+        setChannel(st.channel);
+      if (st.key) setPushKey(st.key);
       if (st.threshold_sec != null) setPhoneThresh(st.threshold_sec);
     } catch {
       /* ignore */
@@ -289,7 +314,8 @@ function App() {
     setPhoneMsg(null);
     try {
       const st = await invoke<PhoneStatus>("install_phone_hook", {
-        barkKey: barkKey.trim(),
+        channel,
+        key: pushKey.trim(),
         thresholdSec: phoneThresh,
       });
       setPhone(st);
@@ -319,7 +345,7 @@ function App() {
     setPhoneBusy(true);
     setPhoneMsg(null);
     try {
-      await invoke("test_phone_push", { barkKey: barkKey.trim() });
+      await invoke("test_phone_push", { channel, key: pushKey.trim() });
       setPhoneMsg("✅ 已发送，看手机锁屏");
     } catch (e) {
       setPhoneMsg("❌ " + String(e));
@@ -425,9 +451,9 @@ function App() {
                 </button>
 
                 <div className="phone-section">
-                  <h3>📱 手机推送（Bark）</h3>
+                  <h3>📱 手机推送</h3>
                   <p className="phone-hint">
-                    任务完成 / 等待授权时推到 iPhone，应用不用开着。
+                    任务完成 / 等待授权时推到手机，应用不用开着。
                     {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
                   </p>
                   {env && !env.curl_available && (
@@ -437,13 +463,25 @@ function App() {
                     </p>
                   )}
                   <label className="row-opt">
-                    Bark Key
+                    渠道
+                    <select
+                      className="keyinput"
+                      value={channel}
+                      onChange={(e) => setChannel(e.target.value as PushChannel)}
+                    >
+                      <option value="bark">Bark（iPhone，免费）</option>
+                      <option value="pushplus">PushPlus（微信）</option>
+                    </select>
+                  </label>
+                  <p className="phone-hint">{CHANNELS[channel].hint}</p>
+                  <label className="row-opt">
+                    {CHANNELS[channel].keyLabel}
                     <input
                       type="text"
                       className="keyinput"
-                      placeholder="api.day.app/ 后那串"
-                      value={barkKey}
-                      onChange={(e) => setBarkKey(e.target.value)}
+                      placeholder={CHANNELS[channel].placeholder}
+                      value={pushKey}
+                      onChange={(e) => setPushKey(e.target.value)}
                     />
                   </label>
                   <label className="row-opt indent">
@@ -462,14 +500,14 @@ function App() {
                   <div className="phone-btns">
                     <button
                       className="test-btn"
-                      disabled={phoneBusy || !barkKey.trim()}
+                      disabled={phoneBusy || !pushKey.trim()}
                       onClick={installPhone}
                     >
                       {phone?.installed ? "更新" : "安装"}
                     </button>
                     <button
                       className="test-btn"
-                      disabled={phoneBusy || !barkKey.trim()}
+                      disabled={phoneBusy || !pushKey.trim()}
                       onClick={testPhone}
                     >
                       测试推送

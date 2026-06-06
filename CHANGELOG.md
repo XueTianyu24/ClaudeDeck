@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.5.0] - 2026-06-07
+
+### 新增
+- **多渠道手机推送**：手机推送新增 **PushPlus（微信）** 渠道，与 Bark（iPhone）并列；🔔 →「📱 手机推送」可下拉选渠道，输入提示随渠道切换。
+- **渠道配置指南** `docs/push-channels.md`：含 Bark / PushPlus 配置步骤、PushPlus 实名认证（约 4 元）与「关闭服务号消息免打扰」等关键提示。
+
+### 改进
+- 测试推送内容带时间戳，避免 PushPlus「请勿频繁推送相同内容」（code 999）误报。
+
 ## [0.4.0] - 2026-06-07
 
 ### 新增
@@ -43,6 +52,7 @@
 - **免安装单 exe**：Windows 11 双击即用；注册 AUMID，纯净机也能正常弹 toast。
 - 全新 app 图标与应用内 logo。
 
+[0.5.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/XueTianyu24/ClaudeDeck/compare/v0.1.0...v0.2.0

@@ -8,7 +8,7 @@
 
 - 📡 **会话监控** ✅ — 实时显示哪些 Claude Code 会话在运行 / 空闲 / 等待输入 / 疑似卡死，跑在哪个项目、用了多久。
 - 🔔 **完成通知** ✅ — 长任务跑完或需要授权时，**桌面弹窗 + 声音**提醒（可设阈值，过滤短问答）。
-- 📱 **手机推送** ✅ — 应用内**一键安装** Claude Code hook，把「任务完成 / 等待授权」推到手机（**Bark / iPhone**），**应用不用开着也能收到**。
+- 📱 **手机推送** ✅ — 应用内**一键安装** Claude Code hook，把「任务完成 / 等待授权」推到手机（**Bark / iPhone** 或 **PushPlus / 微信**），**应用不用开着也能收到**。
 - 🧠 **记忆可视化** ✅ — 统一面板查看 / 编辑全局 + 项目级记忆：auto-memory 按 frontmatter 自动分类成卡片、`[[name]]` 渲染成**力导向关系图**、Markdown 渲染全局 `CLAUDE.md` 与项目 `MEMORY.md`，支持**编辑回写 + 删除（带回收站，可还原）+ 空目录清理**。
 - 🧩 **技能管理** ✅ — 可视化浏览 `~/.claude/skills/`：卡片查看 SKILL.md、展开看**文件结构树**（含 references）、**标签管理 + 筛选 + 搜索**、一键在资源管理器打开 skill 目录。
 
@@ -55,13 +55,15 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 <p align="center"><img src="docs/desktop-notification.png" width="280" alt="Windows 11 桌面通知效果"></p>
 
-## 手机推送配置（Bark / iPhone）
+## 手机推送配置（Bark / 微信 / ntfy）
+
+> 支持 **Bark（iPhone，免费）/ PushPlus（微信，安卓首选）** 两渠道，在应用里 🔔 →「📱 手机推送」选渠道填 key 即可。完整配置（含微信 PushPlus 的实名认证约 4 元 / 关闭服务号免打扰等坑）见 **[手机推送渠道指南](docs/push-channels.md)**。下面以 Bark 手动配置为例。
 
 <p align="center"><img src="docs/bark-notification.jpg" width="300" alt="iPhone 锁屏上的 ClaudeDeck Bark 通知效果"></p>
 
 让 Claude Code 任务完成时推送到手机，**不依赖本应用常驻**——靠 Claude Code 原生 hook 在会话进程内触发。
 
-**最简单**：打开应用 → 右上角 🔔 →「📱 手机推送(Bark)」卡片，填入 Bark key → 点「安装」即可（自动写好脚本和 settings.json，可一键卸载）。以下手动步骤供不用本应用、或想自行配置时参考。
+**最简单**：打开应用 → 右上角 🔔 →「📱 手机推送」卡片，选渠道、填 key → 点「安装」即可（自动写好脚本和 settings.json，可一键卸载）。以下手动步骤供不用本应用、或想自行配置时参考。
 
 1. **装 Bark**：iPhone App Store 搜 [Bark](https://github.com/Finb/Bark)，打开后首页有你的专属地址 `https://api.day.app/<你的KEY>/`，记下 `<你的KEY>`。
 2. **放脚本**：把本仓库的 [`hooks/claudedeck-bark-notify.ps1`](hooks/claudedeck-bark-notify.ps1) 复制到 `~/.claude/hooks/`，把里面 `PUT_YOUR_BARK_KEY_HERE` 改成你的 KEY。
@@ -100,7 +102,7 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 - [x] 手机推送 GUI 一键安装 / 卸载（应用内填 Bark key，自动写脚本 + settings.json）
 - [x] 记忆可视化面板（分类卡片 + 力导向关系图 + Markdown 渲染 + 编辑回写 + 删除/回收站 + 空目录清理）
 - [x] 技能管理（SKILL.md 查看 + 文件结构树 + 标签管理/筛选/搜索 + 打开目录）
-- [ ] 手机推送多渠道（ntfy / 微信）选择 + 阈值可调 UI
+- [x] 手机推送多渠道（Bark / 微信 PushPlus）选择
 - [ ] 会话行展开看最近消息
 - [ ] macOS / Linux 路径编码适配
 - [ ] 在线更新（`tauri-plugin-updater`，从 GitHub Releases 拉新版自动提示；需配套签名密钥，待核心稳定后做）
