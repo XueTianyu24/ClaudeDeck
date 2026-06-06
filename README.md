@@ -1,30 +1,89 @@
 # ClaudeDeck
 
-> Claude Code 的本地控制台 —— **记忆可视化 + 会话监控 + 完成通知**三合一桌面应用。
+> Claude Code 的本地控制台 —— **会话监控 + 完成通知 + 记忆可视化**三合一桌面应用。
 
-把散落在 `~/.claude/` 里的状态变成一块可视化的"驾驶舱"：
+把散落在 `~/.claude/` 里的状态，变成一块可视化的「驾驶舱」。数据源全部来自本机 `~/.claude/`，无需逆向、无需 hack。
 
-- 🧠 **记忆可视化** — 统一面板查看/编辑全局 + 项目级记忆（CLAUDE.md、auto-memory），按 frontmatter 分类，`[[name]]` 渲染成关系图。
-- 📡 **会话监控** — 实时显示哪些 Claude Code 会话在运行 / 空闲 / 卡死，跑在哪个项目。
-- 🔔 **完成通知** — 会话跑完或需要输入时系统弹窗 + 声音提醒（基于 Claude Code 原生 Stop / Notification hook）。
+## 功能
 
-## 定位
+- 📡 **会话监控** ✅ — 实时显示哪些 Claude Code 会话在运行 / 空闲 / 等待输入 / 疑似卡死，跑在哪个项目、用了多久。
+- 🔔 **完成通知** ✅ — 长任务跑完或需要授权时，**桌面弹窗 + 声音**提醒（可设阈值，过滤短问答）。
+- 📱 **手机推送** ✅（实验功能，手动配置）— 通过 Claude Code 原生 hook，把「任务完成」推到手机（**Bark / iPhone**），**应用不用开着也能收到**。
+- 🧠 **记忆可视化** 🚧 — 统一面板查看 / 编辑全局 + 项目级记忆（CLAUDE.md、auto-memory），按 frontmatter 分类、`[[name]]` 渲染成关系图。开发中。
 
-别人是"会话查看器"，ClaudeDeck 是"记忆 + 会话状态 + 告警"的控制台。会话历史浏览已有成熟方案，我们只做监控所需的最小会话视图，**主打没人做透的记忆可视化管理**。
+## 平台
 
-## 技术栈
+目前仅在 **Windows 11** 实测。macOS / Linux 理论可用（Tauri 跨平台），但 `~/.claude/` 路径编码规则尚未在这两个平台验证。
 
-- **Tauri 2 + React + TypeScript + Vite**。Rust 后端读 `~/.claude/`、文件监听、写 hook；前端做面板与可视化。
-- 包体小、内存低、原生系统通知 + 本地文件监听无浏览器沙箱限制。
-- 数据源全部来自本机 `~/.claude/`，无需逆向、无需 hack。
+## 安装与运行
 
-## 开发
+### 环境要求
+
+- [Node.js](https://nodejs.org/) 18+
+- [Rust](https://www.rust-lang.org/tools/install)（Tauri 后端，首次编译较久）
+- Windows 需 WebView2（Win11 自带）+ MSVC 构建工具
+
+### 开发模式
 
 ```bash
 npm install
-npm run tauri dev      # 启动桌面开发模式
+npm run tauri dev        # 启动桌面开发模式，首次编译 Rust 请耐心等
 ```
 
-## 状态
+### 打包
 
-🚧 脚手架已搭好，功能开发中。完整调研见 [`RESEARCH.md`](RESEARCH.md)，文档分层见 `CLAUDE.md` / `memory.md` / `.knowledge/`。
+```bash
+npm run tauri build      # 产物在 src-tauri/target/release/bundle/
+```
+
+## 使用
+
+启动后窗口会列出当前所有 Claude Code 会话（读 `~/.claude/sessions/*.json`，3 秒刷新）：状态、项目、PID、运行时长、最后心跳、版本。点右上角 🔔 配置通知（完成阈值、等待提醒、静音、提示音时长），右上角 ☀/☾ 切换深浅色主题。
+
+## 手机推送配置（Bark / iPhone）
+
+让 Claude Code 任务完成时推送到手机，**不依赖本应用常驻**——靠 Claude Code 原生 hook 在会话进程内触发。
+
+1. **装 Bark**：iPhone App Store 搜 [Bark](https://github.com/Finb/Bark)，打开后首页有你的专属地址 `https://api.day.app/<你的KEY>/`，记下 `<你的KEY>`。
+2. **放脚本**：把本仓库的 [`hooks/claudedeck-bark-notify.ps1`](hooks/claudedeck-bark-notify.ps1) 复制到 `~/.claude/hooks/`，把里面 `PUT_YOUR_BARK_KEY_HERE` 改成你的 KEY。
+   - ⚠️ 该文件**必须保存为 UTF-8 with BOM**，否则 Windows PowerShell 5.1 读中文会乱码。
+3. **挂 hook**：把下面片段合并进 `~/.claude/settings.json` 的顶层（改前先备份）：
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/Users/你的用户名/.claude/hooks/claudedeck-bark-notify.ps1", "timeout": 10 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/Users/你的用户名/.claude/hooks/claudedeck-bark-notify.ps1", "timeout": 10 } ] }
+    ],
+    "Notification": [
+      { "matcher": "permission_prompt", "hooks": [ { "type": "command", "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:/Users/你的用户名/.claude/hooks/claudedeck-bark-notify.ps1", "timeout": 10 } ] }
+    ]
+  }
+}
+```
+
+4. **新开一个 Claude Code 会话**让 hook 生效，派个 ≥30 秒的活试试。
+
+工作原理：`UserPromptSubmit` 记本轮起点 → `Stop` 算时长，满 30 秒（阈值，过滤短问答）才推「✅ 任务完成 / 用时」→ `Notification` 在 Claude 卡着等授权时推「⏳ 需要你处理」。想换 ntfy（Android / 自建）或微信推送，改脚本里的 curl 目标即可。
+
+## 架构
+
+- **Tauri 2 + React + TypeScript + Vite**：Rust 后端读 `~/.claude/`、常驻线程检测会话状态翻转、发系统通知；前端做面板与可视化。
+- 包体小、内存低、原生系统通知 + 本地文件访问无浏览器沙箱限制。
+- 设计与踩坑详见 [`.knowledge/DEVELOPMENT.md`](.knowledge/DEVELOPMENT.md)，数据源字段调研见 [`RESEARCH.md`](RESEARCH.md)。
+
+> ⚠️ Claude Code 的 `sessions/*.json`、`*.jsonl` 是内部私有格式、随版本漂移，无官方契约。本项目全字段容错解析 + 失败降级，但不保证对所有版本永远适配。
+
+## 路线图
+
+- [ ] 手机推送 GUI 一键安装 / 卸载（填 Bark key、选渠道、阈值可调），免手动改 settings.json
+- [ ] 记忆可视化面板（CLAUDE.md + auto-memory + 关系图）
+- [ ] 会话行展开看最近消息
+- [ ] macOS / Linux 路径编码适配
+
+## 许可
+
+[MIT](LICENSE) © 2026 雪天鱼
