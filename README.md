@@ -50,6 +50,8 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 ## 手机推送配置（Bark / iPhone）
 
+<p align="center"><img src="docs/bark-notification.jpg" width="300" alt="iPhone 锁屏上的 ClaudeDeck Bark 通知效果"></p>
+
 让 Claude Code 任务完成时推送到手机，**不依赖本应用常驻**——靠 Claude Code 原生 hook 在会话进程内触发。
 
 **最简单**：打开应用 → 右上角 🔔 →「📱 手机推送(Bark)」卡片，填入 Bark key → 点「安装」即可（自动写好脚本和 settings.json，可一键卸载）。以下手动步骤供不用本应用、或想自行配置时参考。
