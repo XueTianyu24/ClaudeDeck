@@ -279,6 +279,8 @@ struct MemoryProject {
     label: String,
     /// 该项目 memory/*.md 数量（不含 MEMORY.md 索引）
     count: usize,
+    /// 是否存在 MEMORY.md 索引文件
+    has_index: bool,
 }
 
 /// 一条记忆卡片。
@@ -294,6 +296,10 @@ struct MemoryNode {
     /// 完整正文（去掉 frontmatter），前端折叠显示
     body: String,
     parse_error: Option<String>,
+    /// 文件修改时间（ms），编辑保存时回传做 mtime 冲突检测
+    mtime: i64,
+    /// 原始完整内容（含 frontmatter），供编辑回写
+    raw: String,
 }
 
 fn projects_dir() -> Option<PathBuf> {
@@ -344,8 +350,11 @@ fn list_memory_projects() -> Result<Vec<MemoryProject>, String> {
         if !memory_dir.exists() {
             continue;
         }
+        let has_index = memory_dir.join("MEMORY.md").exists();
         let count = count_memory_files(&memory_dir);
-        if count == 0 {
+        // count==0（空目录）也返回，供前端展示「索引 / 物理删除」；
+        // 但完全空（无卡片且无 MEMORY.md）的残目录跳过，没有展示价值。
+        if count == 0 && !has_index {
             continue;
         }
         let dir = path
@@ -353,9 +362,14 @@ fn list_memory_projects() -> Result<Vec<MemoryProject>, String> {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
         let label = decode_project_label(&dir);
-        out.push(MemoryProject { dir, label, count });
+        out.push(MemoryProject {
+            dir,
+            label,
+            count,
+            has_index,
+        });
     }
-    // 记忆多的项目排前面
+    // 记忆多的项目排前面（空目录 count==0 自然沉底）
     out.sort_by(|a, b| b.count.cmp(&a.count));
     Ok(out)
 }
@@ -392,8 +406,18 @@ fn extract_links(body: &str) -> Vec<String> {
     out
 }
 
+/// 文件修改时间（毫秒）；取不到则 0。
+fn file_mtime_ms(path: &Path) -> i64 {
+    path.metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// 解析一个 memory .md：拆 frontmatter（兼容两种格式）+ 正文。
-fn parse_memory(file: String, content: &str) -> MemoryNode {
+fn parse_memory(file: String, content: &str, mtime: i64) -> MemoryNode {
     // 不以 --- 开头：无 frontmatter，全是正文
     let mut name = None;
     let mut description = None;
@@ -445,6 +469,8 @@ fn parse_memory(file: String, content: &str) -> MemoryNode {
         links: extract_links(body),
         body: body.trim().to_string(),
         parse_error: None,
+        mtime,
+        raw: content.to_string(),
     }
 }
 
@@ -454,12 +480,18 @@ struct DocView {
     path: String,
     exists: bool,
     content: String,
+    /// 修改时间（ms），编辑保存时回传做冲突检测
+    mtime: i64,
+}
+
+fn global_md_path() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude").join("CLAUDE.md"))
 }
 
 /// 读全局记忆载体 `~/.claude/CLAUDE.md`（规则文档，非卡片格式）。
 #[tauri::command]
 fn read_global_md() -> DocView {
-    match dirs::home_dir().map(|h| h.join(".claude").join("CLAUDE.md")) {
+    match global_md_path() {
         Some(p) => {
             let exists = p.exists();
             let content = if exists {
@@ -470,6 +502,7 @@ fn read_global_md() -> DocView {
             DocView {
                 path: p.to_string_lossy().to_string(),
                 exists,
+                mtime: if exists { file_mtime_ms(&p) } else { 0 },
                 content,
             }
         }
@@ -477,6 +510,7 @@ fn read_global_md() -> DocView {
             path: String::new(),
             exists: false,
             content: String::new(),
+            mtime: 0,
         },
     }
 }
@@ -502,8 +536,9 @@ fn list_memories(project: String) -> Result<Vec<MemoryNode>, String> {
         if file == "MEMORY.md" {
             continue; // 索引文件不作为卡片
         }
+        let mtime = file_mtime_ms(&path);
         match fs::read_to_string(&path) {
-            Ok(content) => out.push(parse_memory(file, &content)),
+            Ok(content) => out.push(parse_memory(file, &content, mtime)),
             Err(e) => out.push(MemoryNode {
                 file,
                 name: None,
@@ -512,6 +547,8 @@ fn list_memories(project: String) -> Result<Vec<MemoryNode>, String> {
                 links: Vec::new(),
                 body: String::new(),
                 parse_error: Some(format!("读文件失败: {e}")),
+                mtime,
+                raw: String::new(),
             }),
         }
     }
@@ -522,6 +559,263 @@ fn list_memories(project: String) -> Result<Vec<MemoryNode>, String> {
             .then_with(|| a.file.cmp(&b.file))
     });
     Ok(out)
+}
+
+// ── 编辑回写 + 回收站 ─────────────────────────────────────────
+//
+// 设计：编辑直接覆盖（不留 .bak，保持目录干净），靠 expected_mtime 冲突检测
+// + 前端保存前确认兜底；删除不物理删，移入 app 回收站可还原 / 一键清空。
+
+/// 校验 memory 文件名安全：禁止路径穿越 / 分隔符，必须 .md。
+fn safe_md_name(file: &str) -> Result<(), String> {
+    if file.is_empty()
+        || file.contains('/')
+        || file.contains('\\')
+        || file.contains("..")
+        || !file.ends_with(".md")
+    {
+        return Err("非法文件名".into());
+    }
+    Ok(())
+}
+
+/// 校验项目目录名安全。
+fn safe_project(project: &str) -> Result<(), String> {
+    if project.is_empty()
+        || project.contains('/')
+        || project.contains('\\')
+        || project.contains("..")
+    {
+        return Err("非法项目名".into());
+    }
+    Ok(())
+}
+
+fn memory_file_path(project: &str, file: &str) -> Result<PathBuf, String> {
+    safe_project(project)?;
+    safe_md_name(file)?;
+    let root = projects_dir().ok_or("无法定位 projects 目录")?;
+    Ok(root.join(project).join("memory").join(file))
+}
+
+/// 保存（覆盖）一条记忆。`expected_mtime > 0` 时与磁盘比对，不一致则拒绝
+/// （防覆盖外部并发修改）。不留 .bak。返回新的 mtime 供前端更新。
+#[tauri::command]
+fn save_memory(
+    project: String,
+    file: String,
+    content: String,
+    expected_mtime: i64,
+) -> Result<i64, String> {
+    let path = memory_file_path(&project, &file)?;
+    if !path.exists() {
+        return Err("文件不存在".into());
+    }
+    if content.trim().is_empty() {
+        return Err("内容为空，已拒绝保存".into());
+    }
+    if expected_mtime > 0 && file_mtime_ms(&path) != expected_mtime {
+        return Err("文件已被外部修改（mtime 不一致），请刷新后再编辑".into());
+    }
+    fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(file_mtime_ms(&path))
+}
+
+/// 保存全局 CLAUDE.md（高危：影响所有项目）。同样做 mtime 冲突检测。
+#[tauri::command]
+fn save_global_md(content: String, expected_mtime: i64) -> Result<i64, String> {
+    let path = global_md_path().ok_or("无法定位 CLAUDE.md")?;
+    if content.trim().is_empty() {
+        return Err("内容为空，已拒绝保存".into());
+    }
+    if path.exists() && expected_mtime > 0 && file_mtime_ms(&path) != expected_mtime {
+        return Err("文件已被外部修改（mtime 不一致），请刷新后再编辑".into());
+    }
+    fs::write(&path, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(file_mtime_ms(&path))
+}
+
+// 回收站：~/.claude/.claudedeck-trash/，每个删除项一对文件
+//   <id>.md   内容    /   <id>.json  元数据
+
+fn trash_dir() -> Result<PathBuf, String> {
+    Ok(claude_dir()?.join(".claudedeck-trash"))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct TrashMeta {
+    id: String,
+    project: String,
+    file: String,
+    name: Option<String>,
+    deleted_at: i64,
+}
+
+fn safe_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return Err("非法 id".into());
+    }
+    Ok(())
+}
+
+/// 删除一条记忆 → 移入回收站（不物理删除）。
+#[tauri::command]
+fn delete_memory(project: String, file: String) -> Result<(), String> {
+    let path = memory_file_path(&project, &file)?;
+    if !path.exists() {
+        return Err("文件不存在".into());
+    }
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
+    let trash = trash_dir()?;
+    fs::create_dir_all(&trash).map_err(|e| format!("创建回收站失败: {e}"))?;
+    let now = now_ms();
+    let id = format!("{}-{}", now, file.trim_end_matches(".md"));
+    let name = parse_memory(file.clone(), &content, 0).name;
+    let meta = TrashMeta {
+        id: id.clone(),
+        project,
+        file,
+        name,
+        deleted_at: now,
+    };
+    fs::write(trash.join(format!("{id}.md")), &content)
+        .map_err(|e| format!("写回收站失败: {e}"))?;
+    let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(trash.join(format!("{id}.json")), meta_json)
+        .map_err(|e| format!("写元数据失败: {e}"))?;
+    fs::remove_file(&path).map_err(|e| format!("删除原文件失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn list_trash() -> Result<Vec<TrashMeta>, String> {
+    let trash = trash_dir()?;
+    let mut out = Vec::new();
+    if !trash.exists() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(&trash)
+        .map_err(|e| format!("读回收站失败: {e}"))?
+        .flatten()
+    {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(s) = fs::read_to_string(&p) {
+            if let Ok(meta) = serde_json::from_str::<TrashMeta>(&s) {
+                out.push(meta);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    Ok(out)
+}
+
+/// 还原一条：移回原 project/memory/file。原位已存在同名则拒绝。
+#[tauri::command]
+fn restore_trash(id: String) -> Result<(), String> {
+    safe_id(&id)?;
+    let trash = trash_dir()?;
+    let meta_path = trash.join(format!("{id}.json"));
+    let md_path = trash.join(format!("{id}.md"));
+    let meta: TrashMeta = serde_json::from_str(
+        &fs::read_to_string(&meta_path).map_err(|e| format!("读元数据失败: {e}"))?,
+    )
+    .map_err(|e| format!("解析元数据失败: {e}"))?;
+    let dest = memory_file_path(&meta.project, &meta.file)?;
+    if dest.exists() {
+        return Err("原位置已存在同名文件，无法还原".into());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    let content = fs::read_to_string(&md_path).map_err(|e| format!("读回收站内容失败: {e}"))?;
+    fs::write(&dest, content).map_err(|e| format!("还原写入失败: {e}"))?;
+    let _ = fs::remove_file(&md_path);
+    let _ = fs::remove_file(&meta_path);
+    Ok(())
+}
+
+/// 彻底删除：`id` 为 None → 清空整个回收站；否则删单项。
+#[tauri::command]
+fn purge_trash(id: Option<String>) -> Result<(), String> {
+    let trash = trash_dir()?;
+    if !trash.exists() {
+        return Ok(());
+    }
+    match id {
+        Some(id) => {
+            safe_id(&id)?;
+            let _ = fs::remove_file(trash.join(format!("{id}.md")));
+            let _ = fs::remove_file(trash.join(format!("{id}.json")));
+        }
+        None => {
+            fs::remove_dir_all(&trash).map_err(|e| format!("清空失败: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+// ── 项目 MEMORY.md 索引（读 / 写）+ 空目录物理删除 ──────────────
+
+fn project_md_path(project: &str) -> Result<PathBuf, String> {
+    safe_project(project)?;
+    let root = projects_dir().ok_or("无法定位 projects 目录")?;
+    Ok(root.join(project).join("memory").join("MEMORY.md"))
+}
+
+/// 读项目的 MEMORY.md 索引（项目记忆总览，文档型，非卡片）。
+#[tauri::command]
+fn read_project_md(project: String) -> Result<DocView, String> {
+    let p = project_md_path(&project)?;
+    let exists = p.exists();
+    let content = if exists {
+        fs::read_to_string(&p).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    Ok(DocView {
+        path: p.to_string_lossy().to_string(),
+        exists,
+        mtime: if exists { file_mtime_ms(&p) } else { 0 },
+        content,
+    })
+}
+
+/// 保存项目 MEMORY.md（mtime 冲突检测）。
+#[tauri::command]
+fn save_project_md(project: String, content: String, expected_mtime: i64) -> Result<i64, String> {
+    let p = project_md_path(&project)?;
+    if content.trim().is_empty() {
+        return Err("内容为空，已拒绝保存".into());
+    }
+    if p.exists() && expected_mtime > 0 && file_mtime_ms(&p) != expected_mtime {
+        return Err("文件已被外部修改（mtime 不一致），请刷新后再编辑".into());
+    }
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+    }
+    fs::write(&p, content).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(file_mtime_ms(&p))
+}
+
+/// 物理删除空的 memory 目录（连 MEMORY.md 一并删）。
+/// 安全：仅当该目录无任何记忆卡片时才允许；只删 memory 子目录，
+/// 绝不触碰 project 目录本身（其下还有会话 transcript）。
+#[tauri::command]
+fn delete_empty_memory_dir(project: String) -> Result<(), String> {
+    safe_project(&project)?;
+    let root = projects_dir().ok_or("无法定位 projects 目录")?;
+    let mem = root.join(&project).join("memory");
+    if !mem.exists() {
+        return Ok(());
+    }
+    if count_memory_files(&mem) > 0 {
+        return Err("该目录仍有记忆卡片，不能作为空目录删除".into());
+    }
+    fs::remove_dir_all(&mem).map_err(|e| format!("删除目录失败: {e}"))?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -943,6 +1237,15 @@ pub fn run() {
             list_memory_projects,
             list_memories,
             read_global_md,
+            save_memory,
+            save_global_md,
+            delete_memory,
+            list_trash,
+            restore_trash,
+            purge_trash,
+            read_project_md,
+            save_project_md,
+            delete_empty_memory_dir,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,
@@ -961,7 +1264,7 @@ mod tests {
     #[test]
     fn parse_flat_type() {
         let src = "---\nname: 重要旧版文件先改名备份再覆盖\ndescription: 覆盖前先改名备份\ntype: feedback\noriginSessionId: abc\n---\n正文内容\n关联 feedback_check.md";
-        let n = parse_memory("x.md".into(), src);
+        let n = parse_memory("x.md".into(), src, 0);
         assert_eq!(n.name.as_deref(), Some("重要旧版文件先改名备份再覆盖"));
         assert_eq!(n.description.as_deref(), Some("覆盖前先改名备份"));
         assert_eq!(n.mem_type.as_deref(), Some("feedback"));
@@ -973,7 +1276,7 @@ mod tests {
     #[test]
     fn parse_nested_type() {
         let src = "---\nname: feedback-xhs-no-account-search\ndescription: \"不要走\\\"曹少账号\\\"通道\"\nmetadata: \n  node_type: memory\n  type: feedback\n  originSessionId: xyz\n---\n正文";
-        let n = parse_memory("y.md".into(), src);
+        let n = parse_memory("y.md".into(), src, 0);
         assert_eq!(n.name.as_deref(), Some("feedback-xhs-no-account-search"));
         assert_eq!(n.description.as_deref(), Some("不要走\"曹少账号\"通道"));
         assert_eq!(n.mem_type.as_deref(), Some("feedback"));
@@ -983,7 +1286,7 @@ mod tests {
     #[test]
     fn top_level_type_wins() {
         let src = "---\nname: a\ntype: user\nmetadata:\n  type: feedback\n---\nbody";
-        let n = parse_memory("z.md".into(), src);
+        let n = parse_memory("z.md".into(), src, 0);
         assert_eq!(n.mem_type.as_deref(), Some("user"));
     }
 
@@ -995,7 +1298,7 @@ mod tests {
 
     #[test]
     fn no_frontmatter_all_body() {
-        let n = parse_memory("n.md".into(), "没有 frontmatter 的纯正文");
+        let n = parse_memory("n.md".into(), "没有 frontmatter 的纯正文", 0);
         assert!(n.name.is_none());
         assert!(n.mem_type.is_none());
         assert_eq!(n.body, "没有 frontmatter 的纯正文");

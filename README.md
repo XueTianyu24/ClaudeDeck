@@ -9,7 +9,7 @@
 - 📡 **会话监控** ✅ — 实时显示哪些 Claude Code 会话在运行 / 空闲 / 等待输入 / 疑似卡死，跑在哪个项目、用了多久。
 - 🔔 **完成通知** ✅ — 长任务跑完或需要授权时，**桌面弹窗 + 声音**提醒（可设阈值，过滤短问答）。
 - 📱 **手机推送** ✅ — 应用内**一键安装** Claude Code hook，把「任务完成 / 等待授权」推到手机（**Bark / iPhone**），**应用不用开着也能收到**。
-- 🧠 **记忆可视化** 🚧 — 统一面板查看 / 编辑全局 + 项目级记忆（CLAUDE.md、auto-memory），按 frontmatter 分类、`[[name]]` 渲染成关系图。开发中。
+- 🧠 **记忆可视化** ✅ — 统一面板查看 / 编辑全局 + 项目级记忆：auto-memory 按 frontmatter 自动分类成卡片、`[[name]]` 渲染成**力导向关系图**、Markdown 渲染全局 `CLAUDE.md` 与项目 `MEMORY.md`，支持**编辑回写 + 删除（带回收站，可还原）+ 空目录清理**。
 
 ## 平台
 
@@ -47,6 +47,8 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 ## 使用
 
 启动后窗口会列出当前所有 Claude Code 会话（读 `~/.claude/sessions/*.json`，3 秒刷新）：状态、项目、PID、运行时长、最后心跳、版本。点右上角 🔔 配置通知（完成阈值、等待提醒、静音、提示音时长），右上角 ☀/☾ 切换深浅色主题。
+
+顶部「记忆」标签进入**记忆可视化**：左栏切换全局 `CLAUDE.md` / 各项目 / 回收站；项目内可在「卡片 / 关系图 / 📑 索引」间切换，卡片按类型分组、点击展开正文、`[[关联]]` 可跳转；卡片可**编辑 / 删除**（删除进回收站可还原），删空的项目可**物理清理空目录**。
 
 长任务完成时的 Windows 桌面通知（带用时）：
 
@@ -95,8 +97,8 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 ## 路线图
 
 - [x] 手机推送 GUI 一键安装 / 卸载（应用内填 Bark key，自动写脚本 + settings.json）
+- [x] 记忆可视化面板（分类卡片 + 力导向关系图 + Markdown 渲染 + 编辑回写 + 删除/回收站 + 空目录清理）
 - [ ] 手机推送多渠道（ntfy / 微信）选择 + 阈值可调 UI
-- [ ] 记忆可视化面板（CLAUDE.md + auto-memory + 关系图）
 - [ ] 会话行展开看最近消息
 - [ ] macOS / Linux 路径编码适配
 - [ ] 在线更新（`tauri-plugin-updater`，从 GitHub Releases 拉新版自动提示；需配套签名密钥，待核心稳定后做）

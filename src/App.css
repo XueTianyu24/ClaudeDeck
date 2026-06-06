@@ -293,6 +293,12 @@ body {
   opacity: 0.7;
 }
 
+.empty-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* ── table ── */
 .table-wrap {
   flex: 1;
@@ -552,6 +558,108 @@ tr.muted {
   gap: 20px;
 }
 
+/* 卡片 / 关系图 切换工具条 */
+.mem-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mem-toolbar-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  padding: 4px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.mem-toolbar-btn:hover {
+  color: var(--text);
+}
+
+.mem-toolbar-btn.active {
+  background: var(--panel-2);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.mem-toolbar-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* 力导向关系图 */
+.fg-wrap {
+  flex: 1;
+  min-height: 440px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.fg-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.fg-edge {
+  stroke: var(--border);
+  stroke-width: 1;
+  opacity: 0.45;
+}
+
+.fg-edge.on {
+  stroke: var(--dim);
+  opacity: 0.9;
+  stroke-width: 1.5;
+}
+
+.fg-node {
+  cursor: pointer;
+}
+
+.fg-node circle {
+  stroke: var(--bg);
+  stroke-width: 1.5;
+  transition: r 0.1s;
+}
+
+.fg-node.dim {
+  opacity: 0.2;
+}
+
+.fg-node text {
+  fill: var(--text);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  pointer-events: none;
+}
+
+.fg-node.t-user circle {
+  fill: var(--blue);
+}
+.fg-node.t-feedback circle {
+  fill: var(--amber);
+}
+.fg-node.t-project circle {
+  fill: var(--green);
+}
+.fg-node.t-reference circle {
+  fill: #a78bfa;
+}
+.fg-node.t-other circle {
+  fill: var(--gray);
+}
+
 .mem-group {
   display: flex;
   flex-direction: column;
@@ -609,10 +717,63 @@ tr.muted {
   box-shadow: 0 0 0 2px var(--green);
 }
 
+.mem-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .mem-name {
   font-weight: 600;
   font-size: 13px;
   line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+}
+
+.mem-del {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.mem-del-btn {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--red);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+.mem-del-btn:hover {
+  background: var(--red);
+}
+
+.mem-del-confirm,
+.mem-del-cancel {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.mem-del-confirm {
+  border-color: var(--red);
+  color: var(--red);
+  font-weight: 600;
+}
+.mem-del-confirm:hover {
+  background: var(--red);
+  color: #fff;
+}
+.mem-del-cancel:hover {
+  background: var(--border);
 }
 
 .mem-desc {
@@ -665,6 +826,133 @@ tr.muted {
 .mem-err {
   font-size: 12px;
   color: var(--amber);
+}
+
+/* 卡片内操作 + 编辑器 */
+.mem-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mem-link-chip.danger {
+  color: var(--red);
+  border-color: transparent;
+}
+.mem-link-chip.danger:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.mem-editor {
+  margin-top: 10px;
+}
+
+.mem-editor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+
+.mem-editor-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.mem-textarea {
+  width: 100%;
+  min-height: 320px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+  padding: 12px 14px;
+  resize: vertical;
+}
+
+.mem-textarea:focus {
+  outline: none;
+  border-color: var(--green);
+}
+
+.mem-toolbar-btn.danger {
+  color: var(--red);
+  border-color: var(--red);
+}
+.mem-toolbar-btn.danger:hover {
+  background: var(--red);
+  color: #fff;
+}
+
+.mem-toolbar-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* 全局文档顶栏（路径 + 编辑） */
+.mem-doc-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.mem-doc-bar .mem-doc-path {
+  margin-bottom: 0;
+}
+
+/* 回收站 */
+.trash-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 14px;
+}
+
+.trash-info {
+  min-width: 0;
+}
+
+.trash-name {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-meta {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 2px;
+}
+
+.trash-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* 文档型记忆（全局 CLAUDE.md）全文展示 */
