@@ -31,3 +31,15 @@ serde_json = "1"
 dirs = "5"
 sysinfo = "0.33"
 
+# 免安装 / dev 场景注册 AppUserModelID，让 toast 通知来源显示 ClaudeDeck 而非 PowerShell
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Storage_EnhancedStorage",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+] }
+

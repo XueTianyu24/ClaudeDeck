@@ -99,6 +99,7 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 - [ ] 记忆可视化面板（CLAUDE.md + auto-memory + 关系图）
 - [ ] 会话行展开看最近消息
 - [ ] macOS / Linux 路径编码适配
+- [ ] 在线更新（`tauri-plugin-updater`，从 GitHub Releases 拉新版自动提示；需配套签名密钥，待核心稳定后做）
 
 ## 许可
 

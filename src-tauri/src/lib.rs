@@ -11,6 +11,8 @@ use sysinfo::{Pid, System};
 use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
 
+mod aumid;
+
 /// busy 会话超过这个空闲时长（毫秒）判为疑似卡死。RESEARCH §3 初值。
 const STUCK_THRESHOLD_MS: i64 = 60_000;
 /// 后端通知线程的轮询间隔。不受 webview 前后台限流影响。
@@ -627,6 +629,12 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(cfg.clone())
         .setup(move |app| {
+            // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
+            // app_id 必须 == tauri.conf.json 的 identifier，否则与通知插件用的 AUMID 不一致。
+            #[cfg(windows)]
+            if let Err(e) = aumid::ensure_aumid_shortcut("com.xueyu.claudedeck", "ClaudeDeck") {
+                eprintln!("AUMID 设置失败: {e}");
+            }
             let handle = app.handle().clone();
             let cfg_thread = cfg.clone();
             std::thread::spawn(move || notifier_loop(handle, cfg_thread));
