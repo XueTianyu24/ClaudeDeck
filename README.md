@@ -41,7 +41,7 @@ npm run tauri dev        # 启动桌面开发模式，首次编译 Rust 请耐�
 ### 打包
 
 ```bash
-npm run tauri build      # 产物在 src-tauri/target/release/bundle/
+npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.exe；安装包: target/release/bundle/
 ```
 
 ## 使用
@@ -88,7 +88,8 @@ npm run tauri build      # 产物在 src-tauri/target/release/bundle/
 
 ## 路线图
 
-- [ ] 手机推送 GUI 一键安装 / 卸载（填 Bark key、选渠道、阈值可调），免手动改 settings.json
+- [x] 手机推送 GUI 一键安装 / 卸载（应用内填 Bark key，自动写脚本 + settings.json）
+- [ ] 手机推送多渠道（ntfy / 微信）选择 + 阈值可调 UI
 - [ ] 记忆可视化面板（CLAUDE.md + auto-memory + 关系图）
 - [ ] 会话行展开看最近消息
 - [ ] macOS / Linux 路径编码适配
