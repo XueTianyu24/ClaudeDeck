@@ -157,6 +157,14 @@ async function notify(title: string, body: string) {
   if (await ensurePermission()) sendNotification({ title, body });
 }
 
+type PhoneStatus = {
+  installed: boolean;
+  script_exists: boolean;
+  bark_key: string | null;
+  threshold_sec: number | null;
+  script_path: string;
+};
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -166,6 +174,13 @@ function App() {
   );
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+
+  // 手机推送（Bark hook）状态
+  const [phone, setPhone] = useState<PhoneStatus | null>(null);
+  const [barkKey, setBarkKey] = useState("");
+  const [phoneThresh, setPhoneThresh] = useState(30);
+  const [phoneBusy, setPhoneBusy] = useState(false);
+  const [phoneMsg, setPhoneMsg] = useState<string | null>(null);
 
   // 给事件监听读最新设置用（监听只订阅一次，避免重订阅）
   const settingsRef = useRef(settings);
@@ -226,6 +241,64 @@ function App() {
   function testNotify() {
     notify("🔔 ClaudeDeck 测试通知", "通知和声音正常工作");
     if (!settings.mute) playDing("done", settings.dingSec);
+  }
+
+  async function loadPhone() {
+    try {
+      const st = await invoke<PhoneStatus>("get_phone_hook_status");
+      setPhone(st);
+      if (st.bark_key) setBarkKey(st.bark_key);
+      if (st.threshold_sec != null) setPhoneThresh(st.threshold_sec);
+    } catch {
+      /* ignore */
+    }
+  }
+  useEffect(() => {
+    loadPhone();
+  }, []);
+
+  async function installPhone() {
+    setPhoneBusy(true);
+    setPhoneMsg(null);
+    try {
+      const st = await invoke<PhoneStatus>("install_phone_hook", {
+        barkKey: barkKey.trim(),
+        thresholdSec: phoneThresh,
+      });
+      setPhone(st);
+      setPhoneMsg("✅ 已安装，新开一个 Claude Code 会话即可生效");
+    } catch (e) {
+      setPhoneMsg("❌ " + String(e));
+    } finally {
+      setPhoneBusy(false);
+    }
+  }
+
+  async function uninstallPhone() {
+    setPhoneBusy(true);
+    setPhoneMsg(null);
+    try {
+      const st = await invoke<PhoneStatus>("uninstall_phone_hook");
+      setPhone(st);
+      setPhoneMsg("已卸载");
+    } catch (e) {
+      setPhoneMsg("❌ " + String(e));
+    } finally {
+      setPhoneBusy(false);
+    }
+  }
+
+  async function testPhone() {
+    setPhoneBusy(true);
+    setPhoneMsg(null);
+    try {
+      await invoke("test_phone_push", { barkKey: barkKey.trim() });
+      setPhoneMsg("✅ 已发送，看手机锁屏");
+    } catch (e) {
+      setPhoneMsg("❌ " + String(e));
+    } finally {
+      setPhoneBusy(false);
+    }
   }
 
   const liveCount = sessions.filter((s) => s.alive && !s.parse_error).length;
@@ -323,6 +396,63 @@ function App() {
                 <button className="test-btn" onClick={testNotify}>
                   发送测试通知
                 </button>
+
+                <div className="phone-section">
+                  <h3>📱 手机推送（Bark）</h3>
+                  <p className="phone-hint">
+                    任务完成 / 等待授权时推到 iPhone，应用不用开着。
+                    {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
+                  </p>
+                  <label className="row-opt">
+                    Bark Key
+                    <input
+                      type="text"
+                      className="keyinput"
+                      placeholder="api.day.app/ 后那串"
+                      value={barkKey}
+                      onChange={(e) => setBarkKey(e.target.value)}
+                    />
+                  </label>
+                  <label className="row-opt indent">
+                    完成阈值
+                    <input
+                      type="number"
+                      min={0}
+                      className="num"
+                      value={phoneThresh}
+                      onChange={(e) =>
+                        setPhoneThresh(Math.max(0, Number(e.target.value) || 0))
+                      }
+                    />
+                    秒以上
+                  </label>
+                  <div className="phone-btns">
+                    <button
+                      className="test-btn"
+                      disabled={phoneBusy || !barkKey.trim()}
+                      onClick={installPhone}
+                    >
+                      {phone?.installed ? "更新" : "安装"}
+                    </button>
+                    <button
+                      className="test-btn"
+                      disabled={phoneBusy || !barkKey.trim()}
+                      onClick={testPhone}
+                    >
+                      测试推送
+                    </button>
+                    {phone?.installed && (
+                      <button
+                        className="test-btn danger"
+                        disabled={phoneBusy}
+                        onClick={uninstallPhone}
+                      >
+                        卸载
+                      </button>
+                    )}
+                  </div>
+                  {phoneMsg && <p className="phone-msg">{phoneMsg}</p>}
+                </div>
               </div>
             )}
           </div>

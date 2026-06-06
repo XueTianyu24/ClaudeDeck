@@ -206,6 +206,63 @@ body {
   border-color: var(--green);
 }
 
+/* ── 手机推送卡片 ── */
+.settings-panel {
+  max-height: 82vh;
+  overflow-y: auto;
+}
+.phone-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.phone-section h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.phone-hint {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+.keyinput {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.phone-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.phone-btns .test-btn {
+  flex: 1;
+  margin-top: 0;
+}
+.test-btn.danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+.test-btn.danger:hover {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+.phone-msg {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
 /* ── banner / empty ── */
 .banner.err {
   background: rgba(239, 68, 68, 0.12);

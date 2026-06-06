@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sysinfo::{Pid, System};
 use tauri::Emitter;
 use tauri_plugin_notification::NotificationExt;
@@ -230,6 +232,306 @@ fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConf
     }
 }
 
+// ── 手机推送（Bark）hook 一键安装 ──────────────────────────────
+//
+// 把任务完成 / 等待授权通过 CC 原生 hook 推到手机。脚本与 settings.json 都在
+// `~/.claude/` 下，**应用不用常驻**，靠 CC 进程自己触发。
+
+/// 标记字符串：用于在 settings.json 里识别「我们装的」hook，做幂等增删。
+const HOOK_MARKER: &str = "claudedeck-bark-notify";
+
+/// hook 脚本模板。`__BARK_KEY__` / `__THRESHOLD_MS__` 安装时替换。
+/// 写盘时前置 UTF-8 BOM，否则 Windows PowerShell 5.1 按 GBK 读中文会乱码。
+const PHONE_HOOK_SCRIPT: &str = r##"# ClaudeDeck — Claude Code hook → Bark 手机推送
+# 本文件由 ClaudeDeck 自动生成与管理，请勿手改（在应用里改 key / 阈值即可）。
+$ErrorActionPreference = 'SilentlyContinue'
+# 强制 UTF-8 读 stdin：CC 写 UTF-8，5.1 的 [Console]::In 默认 GBK 会解析失败。
+$raw = ''
+try {
+    $sr = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.UTF8Encoding]::new($false))
+    $raw = $sr.ReadToEnd()
+    $sr.Dispose()
+} catch { }
+$j = $null
+if ($raw) { try { $j = $raw | ConvertFrom-Json } catch { } }
+$cwd = if ($j -and $j.cwd) { [string]$j.cwd } else { '' }
+$proj = if ($cwd) { Split-Path $cwd -Leaf } else { '会话' }
+$ev = if ($j) { [string]$j.hook_event_name } else { '' }
+$sid = if ($j -and $j.session_id) { [string]$j.session_id } else { 'unknown' }
+$stateDir = Join-Path $env:USERPROFILE '.claude\hooks\.state'
+$stateFile = Join-Path $stateDir $sid
+$barkKey = '__BARK_KEY__'
+$url = "https://api.day.app/$barkKey"
+$THRESHOLD_MS = __THRESHOLD_MS__
+if ($ev -eq 'UserPromptSubmit') {
+    try {
+        if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Force $stateDir > $null }
+        [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds().ToString() | Set-Content -Path $stateFile -Encoding ASCII
+    } catch { }
+    exit 0
+}
+if ($ev -eq 'Stop') {
+    $start = $null
+    if (Test-Path $stateFile) {
+        try { $start = [int64]((Get-Content $stateFile -Raw).Trim()) } catch { }
+        Remove-Item $stateFile -Force
+    }
+    $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $dur = if ($start) { $now - $start } else { 0 }
+    if ($dur -lt $THRESHOLD_MS) { exit 0 }
+    $sec = [int]($dur / 1000)
+    $durTxt = if ($sec -lt 60) { "${sec}s" } else { "{0}m{1}s" -f [int]($sec / 60), ($sec % 60) }
+    $title = "✅ $proj · 任务完成"
+    $body = "用时 $durTxt"
+    $sound = 'birdsong'
+}
+elseif ($ev -eq 'Notification') {
+    $msg = if ($j -and $j.message) { [string]$j.message } else { '' }
+    $title = "⏳ $proj · 需要你处理"
+    $body = if ($msg) { $msg } elseif ($cwd) { $cwd } else { '等待你的操作' }
+    $sound = 'alarm'
+}
+else { exit 0 }
+function Enc([string]$s) { [uri]::EscapeDataString($s) }
+$form = "title=$(Enc $title)&body=$(Enc $body)&group=ClaudeDeck&sound=$sound"
+& curl.exe -s -X POST $url --data $form > $null
+exit 0
+"##;
+
+/// 手机 hook 当前状态，回传前端用于回填表单 + 显示开关。
+#[derive(Debug, Serialize)]
+struct PhoneHookStatus {
+    installed: bool,
+    script_exists: bool,
+    bark_key: Option<String>,
+    threshold_sec: Option<i64>,
+    script_path: String,
+}
+
+fn claude_dir() -> Result<PathBuf, String> {
+    dirs::home_dir()
+        .map(|h| h.join(".claude"))
+        .ok_or_else(|| "无法定位 home 目录".into())
+}
+
+fn phone_script_path() -> Result<PathBuf, String> {
+    Ok(claude_dir()?
+        .join("hooks")
+        .join("claudedeck-bark-notify.ps1"))
+}
+
+fn hook_command(script: &Path) -> String {
+    let p = script.to_string_lossy().replace('\\', "/");
+    format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File {p}")
+}
+
+fn group_is_ours(group: &Value) -> bool {
+    group
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|arr| {
+            arr.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains(HOOK_MARKER))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 从 settings.json 三个事件里剔除我们装的 hook group（幂等基础）。
+fn remove_our_hooks(root: &mut Value) {
+    if let Some(hooks) = root.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        for ev in ["UserPromptSubmit", "Stop", "Notification"] {
+            if let Some(arr) = hooks.get_mut(ev).and_then(|a| a.as_array_mut()) {
+                arr.retain(|g| !group_is_ours(g));
+            }
+        }
+    }
+}
+
+fn push_hook(root: &mut Value, event: &str, group: Value) {
+    if let Some(obj) = root.as_object_mut() {
+        let hooks = obj.entry("hooks").or_insert_with(|| json!({}));
+        if let Some(h) = hooks.as_object_mut() {
+            let arr = h.entry(event).or_insert_with(|| json!([]));
+            if let Some(a) = arr.as_array_mut() {
+                a.push(group);
+            }
+        }
+    }
+}
+
+fn write_phone_script(bark_key: &str, threshold_ms: i64) -> Result<PathBuf, String> {
+    let path = phone_script_path()?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
+    }
+    let content = PHONE_HOOK_SCRIPT
+        .replace("__BARK_KEY__", bark_key)
+        .replace("__THRESHOLD_MS__", &threshold_ms.to_string());
+    // 前置 UTF-8 BOM
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(content.as_bytes());
+    fs::write(&path, bytes).map_err(|e| format!("写脚本失败: {e}"))?;
+    Ok(path)
+}
+
+fn extract_between(s: &str, start: &str, end: &str) -> Option<String> {
+    let i = s.find(start)? + start.len();
+    let rest = &s[i..];
+    let j = rest.find(end)?;
+    Some(rest[..j].to_string())
+}
+
+fn settings_has_our_hook() -> bool {
+    let Ok(settings) = claude_dir().map(|d| d.join("settings.json")) else {
+        return false;
+    };
+    let Ok(s) = fs::read_to_string(&settings) else {
+        return false;
+    };
+    let Ok(root) = serde_json::from_str::<Value>(&s) else {
+        return false;
+    };
+    root.get("hooks")
+        .and_then(|h| h.as_object())
+        .map(|h| {
+            ["UserPromptSubmit", "Stop", "Notification"].iter().any(|ev| {
+                h.get(*ev)
+                    .and_then(|a| a.as_array())
+                    .map(|arr| arr.iter().any(group_is_ours))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn phone_hook_status() -> PhoneHookStatus {
+    let script = phone_script_path().unwrap_or_default();
+    let script_exists = script.exists();
+    let mut bark_key = None;
+    let mut threshold_sec = None;
+    if script_exists {
+        if let Ok(content) = fs::read_to_string(&script) {
+            bark_key = extract_between(&content, "$barkKey = '", "'").filter(|k| !k.is_empty());
+            threshold_sec = extract_between(&content, "$THRESHOLD_MS = ", "\n")
+                .and_then(|s| s.trim().parse::<i64>().ok())
+                .map(|ms| ms / 1000);
+        }
+    }
+    PhoneHookStatus {
+        installed: script_exists && settings_has_our_hook(),
+        script_exists,
+        bark_key,
+        threshold_sec,
+        script_path: script.to_string_lossy().to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_phone_hook_status() -> PhoneHookStatus {
+    phone_hook_status()
+}
+
+#[tauri::command]
+fn install_phone_hook(bark_key: String, threshold_sec: i64) -> Result<PhoneHookStatus, String> {
+    let key = bark_key.trim().to_string();
+    if key.is_empty() {
+        return Err("Bark key 不能为空".into());
+    }
+    let thr_ms = threshold_sec.max(0) * 1000;
+    let script = write_phone_script(&key, thr_ms)?;
+
+    let settings = claude_dir()?.join("settings.json");
+    // 改前备份
+    if settings.exists() {
+        let bak = claude_dir()?.join("settings.json.claudedeck-bak");
+        fs::copy(&settings, &bak).map_err(|e| format!("备份 settings.json 失败: {e}"))?;
+    }
+    let mut root: Value = if settings.exists() {
+        let s = fs::read_to_string(&settings).map_err(|e| format!("读 settings.json 失败: {e}"))?;
+        serde_json::from_str(&s)
+            .map_err(|e| format!("settings.json 不是合法 JSON，已中止以免破坏: {e}"))?
+    } else {
+        json!({})
+    };
+    if !root.is_object() {
+        return Err("settings.json 顶层不是对象，已中止".into());
+    }
+
+    remove_our_hooks(&mut root); // 幂等：先清旧再加新
+    let cmd = hook_command(&script);
+    let inner = json!({ "type": "command", "command": cmd, "timeout": 10 });
+    push_hook(&mut root, "UserPromptSubmit", json!({ "hooks": [inner.clone()] }));
+    push_hook(&mut root, "Stop", json!({ "hooks": [inner.clone()] }));
+    push_hook(
+        &mut root,
+        "Notification",
+        json!({ "matcher": "permission_prompt", "hooks": [inner] }),
+    );
+
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&settings, pretty).map_err(|e| format!("写 settings.json 失败: {e}"))?;
+    Ok(phone_hook_status())
+}
+
+#[tauri::command]
+fn uninstall_phone_hook() -> Result<PhoneHookStatus, String> {
+    let settings = claude_dir()?.join("settings.json");
+    if settings.exists() {
+        let s = fs::read_to_string(&settings).map_err(|e| format!("读 settings.json 失败: {e}"))?;
+        let mut root: Value =
+            serde_json::from_str(&s).map_err(|e| format!("settings.json 解析失败: {e}"))?;
+        let bak = claude_dir()?.join("settings.json.claudedeck-bak");
+        let _ = fs::copy(&settings, &bak);
+        remove_our_hooks(&mut root);
+        let pretty = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
+        fs::write(&settings, pretty).map_err(|e| format!("写 settings.json 失败: {e}"))?;
+    }
+    let _ = fs::remove_file(phone_script_path()?);
+    Ok(phone_hook_status())
+}
+
+#[tauri::command]
+fn test_phone_push(bark_key: String) -> Result<(), String> {
+    let key = bark_key.trim();
+    if key.is_empty() {
+        return Err("Bark key 不能为空".into());
+    }
+    let url = format!("https://api.day.app/{key}");
+    let out = Command::new("curl.exe")
+        .args([
+            "-s",
+            "-X",
+            "POST",
+            &url,
+            "--data-urlencode",
+            "title=🔔 ClaudeDeck 测试推送",
+            "--data-urlencode",
+            "body=能收到这条就说明 Bark 配好了",
+            "--data-urlencode",
+            "group=ClaudeDeck",
+            "--data-urlencode",
+            "sound=birdsong",
+        ])
+        .output()
+        .map_err(|e| format!("调用 curl 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "curl 退出码非 0: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let resp = String::from_utf8_lossy(&out.stdout);
+    if resp.contains("\"code\":200") {
+        Ok(())
+    } else {
+        Err(format!("Bark 返回异常: {resp}"))
+    }
+}
+
 /// 后端常驻通知线程的逐会话状态。
 struct Tracked {
     status: Option<String>,
@@ -330,7 +632,14 @@ pub fn run() {
             std::thread::spawn(move || notifier_loop(handle, cfg_thread));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![list_sessions, set_notify_config])
+        .invoke_handler(tauri::generate_handler![
+            list_sessions,
+            set_notify_config,
+            get_phone_hook_status,
+            install_phone_hook,
+            uninstall_phone_hook,
+            test_phone_push
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
