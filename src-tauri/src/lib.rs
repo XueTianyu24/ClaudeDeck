@@ -262,6 +262,268 @@ fn get_env_status() -> EnvStatus {
     }
 }
 
+// ── 记忆可视化 ────────────────────────────────────────────────
+//
+// 数据源：`~/.claude/projects/<编码路径>/memory/*.md`（auto-memory）。
+// **两种 frontmatter 格式并存**（实地核实，本机 73 嵌套 / 81 顶层）：
+//   A 顶层平铺：  type: feedback
+//   B metadata 嵌套： metadata:\n  type: feedback\n  node_type: memory
+// 解析全字段 optional，两处都探，单文件失败降级，绝不让一个坏文件拖垮整页。
+
+/// 一个有 memory 目录的项目（给前端左侧切换）。
+#[derive(Debug, Serialize)]
+struct MemoryProject {
+    /// 编码后的目录名（如 C--Users-jccao-Desktop-ClaudeDeck）
+    dir: String,
+    /// 友好显示名（尽力从编码反推，失败则显示编码名）
+    label: String,
+    /// 该项目 memory/*.md 数量（不含 MEMORY.md 索引）
+    count: usize,
+}
+
+/// 一条记忆卡片。
+#[derive(Debug, Serialize)]
+struct MemoryNode {
+    file: String,
+    name: Option<String>,
+    description: Option<String>,
+    /// feedback / user / project / reference / 其它
+    mem_type: Option<String>,
+    /// body 里 [[...]] 提取的关联（可能指向 name 或文件名）
+    links: Vec<String>,
+    /// 完整正文（去掉 frontmatter），前端折叠显示
+    body: String,
+    parse_error: Option<String>,
+}
+
+fn projects_dir() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".claude").join("projects"))
+}
+
+/// 从编码目录名尽力反推友好名：取 `Desktop-` 之后的部分，否则原样。
+/// 编码规则有歧义（项目名本身含 `-` 时无法可靠还原），故仅作显示美化。
+fn decode_project_label(dir: &str) -> String {
+    if let Some(idx) = dir.find("Desktop-") {
+        let tail = &dir[idx + "Desktop-".len()..];
+        if !tail.is_empty() {
+            return tail.to_string();
+        }
+    }
+    dir.to_string()
+}
+
+/// 统计某 memory 目录下的记忆文件数（排除 MEMORY.md 索引）。
+fn count_memory_files(memory_dir: &Path) -> usize {
+    fs::read_dir(memory_dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    let p = e.path();
+                    p.extension().and_then(|s| s.to_str()) == Some("md")
+                        && p.file_name().and_then(|s| s.to_str()) != Some("MEMORY.md")
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tauri::command]
+fn list_memory_projects() -> Result<Vec<MemoryProject>, String> {
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    let mut out = Vec::new();
+    if !root.exists() {
+        return Ok(out);
+    }
+    let entries = fs::read_dir(&root).map_err(|e| format!("读取 projects 目录失败: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let memory_dir = path.join("memory");
+        if !memory_dir.exists() {
+            continue;
+        }
+        let count = count_memory_files(&memory_dir);
+        if count == 0 {
+            continue;
+        }
+        let dir = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let label = decode_project_label(&dir);
+        out.push(MemoryProject { dir, label, count });
+    }
+    // 记忆多的项目排前面
+    out.sort_by(|a, b| b.count.cmp(&a.count));
+    Ok(out)
+}
+
+/// 去掉配对的首尾引号并反转义 `\"`。
+fn unquote(s: &str) -> String {
+    let t = s.trim();
+    let inner = if (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
+        || (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
+    {
+        &t[1..t.len() - 1]
+    } else {
+        t
+    };
+    inner.replace("\\\"", "\"").replace("\\n", "\n")
+}
+
+/// 提取 body 里所有 `[[...]]` 链接（手写扫描，不依赖 regex crate）。
+fn extract_links(body: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = body;
+    while let Some(i) = rest.find("[[") {
+        let after = &rest[i + 2..];
+        if let Some(j) = after.find("]]") {
+            let link = after[..j].trim();
+            if !link.is_empty() && !out.iter().any(|x| x == link) {
+                out.push(link.to_string());
+            }
+            rest = &after[j + 2..];
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// 解析一个 memory .md：拆 frontmatter（兼容两种格式）+ 正文。
+fn parse_memory(file: String, content: &str) -> MemoryNode {
+    // 不以 --- 开头：无 frontmatter，全是正文
+    let mut name = None;
+    let mut description = None;
+    let mut mem_type = None;
+    let mut body = content;
+
+    if let Some(stripped) = content.strip_prefix("---") {
+        // 找 frontmatter 的闭合 ---（在某一行单独出现）
+        if let Some(end) = stripped.find("\n---") {
+            let fm = &stripped[..end];
+            // 闭合 --- 之后是正文
+            let after = &stripped[end + 4..];
+            body = after.strip_prefix('\n').unwrap_or(after);
+
+            // 顶层字段不缩进，metadata 嵌套字段缩进；用 indented 区分即可，
+            // type 在顶层（格式 A）或 metadata 内（格式 B）都接受。
+            for raw_line in fm.lines() {
+                let line = raw_line.trim_end();
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let indented = line.starts_with(' ') || line.starts_with('\t');
+
+                let Some((k, v)) = trimmed.split_once(':') else {
+                    continue;
+                };
+                let key = k.trim();
+                let val = v.trim();
+
+                match key {
+                    "name" if !indented => name = Some(unquote(val)),
+                    "description" if !indented => description = Some(unquote(val)),
+                    // type：顶层（A）或 metadata 嵌套（B）都接受，顶层优先
+                    "type" if !val.is_empty() && (!indented || mem_type.is_none()) => {
+                        mem_type = Some(unquote(val));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    MemoryNode {
+        file,
+        name,
+        description,
+        mem_type,
+        links: extract_links(body),
+        body: body.trim().to_string(),
+        parse_error: None,
+    }
+}
+
+/// 一篇文档型记忆（如全局 CLAUDE.md）的内容。
+#[derive(Debug, Serialize)]
+struct DocView {
+    path: String,
+    exists: bool,
+    content: String,
+}
+
+/// 读全局记忆载体 `~/.claude/CLAUDE.md`（规则文档，非卡片格式）。
+#[tauri::command]
+fn read_global_md() -> DocView {
+    match dirs::home_dir().map(|h| h.join(".claude").join("CLAUDE.md")) {
+        Some(p) => {
+            let exists = p.exists();
+            let content = if exists {
+                fs::read_to_string(&p).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            DocView {
+                path: p.to_string_lossy().to_string(),
+                exists,
+                content,
+            }
+        }
+        None => DocView {
+            path: String::new(),
+            exists: false,
+            content: String::new(),
+        },
+    }
+}
+
+#[tauri::command]
+fn list_memories(project: String) -> Result<Vec<MemoryNode>, String> {
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    let memory_dir = root.join(&project).join("memory");
+    let mut out = Vec::new();
+    if !memory_dir.exists() {
+        return Ok(out);
+    }
+    let entries = fs::read_dir(&memory_dir).map_err(|e| format!("读取 memory 目录失败: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let file = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if file == "MEMORY.md" {
+            continue; // 索引文件不作为卡片
+        }
+        match fs::read_to_string(&path) {
+            Ok(content) => out.push(parse_memory(file, &content)),
+            Err(e) => out.push(MemoryNode {
+                file,
+                name: None,
+                description: None,
+                mem_type: None,
+                links: Vec::new(),
+                body: String::new(),
+                parse_error: Some(format!("读文件失败: {e}")),
+            }),
+        }
+    }
+    // 按类型再按文件名排序，归类清晰
+    out.sort_by(|a, b| {
+        a.mem_type
+            .cmp(&b.mem_type)
+            .then_with(|| a.file.cmp(&b.file))
+    });
+    Ok(out)
+}
+
 #[tauri::command]
 fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConfig>>>) {
     if let Ok(mut g) = state.lock() {
@@ -678,6 +940,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             get_env_status,
+            list_memory_projects,
+            list_memories,
+            read_global_md,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,
@@ -686,4 +951,53 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 格式 A：顶层平铺 type（本机较早格式）
+    #[test]
+    fn parse_flat_type() {
+        let src = "---\nname: 重要旧版文件先改名备份再覆盖\ndescription: 覆盖前先改名备份\ntype: feedback\noriginSessionId: abc\n---\n正文内容\n关联 feedback_check.md";
+        let n = parse_memory("x.md".into(), src);
+        assert_eq!(n.name.as_deref(), Some("重要旧版文件先改名备份再覆盖"));
+        assert_eq!(n.description.as_deref(), Some("覆盖前先改名备份"));
+        assert_eq!(n.mem_type.as_deref(), Some("feedback"));
+        assert!(n.body.starts_with("正文内容"));
+        assert!(n.parse_error.is_none());
+    }
+
+    // 格式 B：metadata 嵌套 type + description 带引号转义
+    #[test]
+    fn parse_nested_type() {
+        let src = "---\nname: feedback-xhs-no-account-search\ndescription: \"不要走\\\"曹少账号\\\"通道\"\nmetadata: \n  node_type: memory\n  type: feedback\n  originSessionId: xyz\n---\n正文";
+        let n = parse_memory("y.md".into(), src);
+        assert_eq!(n.name.as_deref(), Some("feedback-xhs-no-account-search"));
+        assert_eq!(n.description.as_deref(), Some("不要走\"曹少账号\"通道"));
+        assert_eq!(n.mem_type.as_deref(), Some("feedback"));
+    }
+
+    // 顶层 type 优先于 metadata 内的 type
+    #[test]
+    fn top_level_type_wins() {
+        let src = "---\nname: a\ntype: user\nmetadata:\n  type: feedback\n---\nbody";
+        let n = parse_memory("z.md".into(), src);
+        assert_eq!(n.mem_type.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn extract_links_dedup() {
+        let body = "见 [[foo]] 和 [[bar]]，又见 [[foo]]";
+        assert_eq!(extract_links(body), vec!["foo", "bar"]);
+    }
+
+    #[test]
+    fn no_frontmatter_all_body() {
+        let n = parse_memory("n.md".into(), "没有 frontmatter 的纯正文");
+        assert!(n.name.is_none());
+        assert!(n.mem_type.is_none());
+        assert_eq!(n.body, "没有 frontmatter 的纯正文");
+    }
 }

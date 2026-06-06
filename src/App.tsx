@@ -8,6 +8,7 @@ import {
 } from "@tauri-apps/plugin-notification";
 import "./App.css";
 import logo from "./assets/logo.png";
+import MemoryView from "./MemoryView";
 
 type Session = {
   pid: number | null;
@@ -182,6 +183,7 @@ function App() {
   );
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
+  const [view, setView] = useState<"sessions" | "memory">("sessions");
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -497,9 +499,26 @@ function App() {
         </div>
       </header>
 
-      {error && <div className="banner err">读取失败：{error}</div>}
+      <div className="view-tabs">
+        <button
+          className={`view-tab ${view === "sessions" ? "active" : ""}`}
+          onClick={() => setView("sessions")}
+        >
+          会话监控
+        </button>
+        <button
+          className={`view-tab ${view === "memory" ? "active" : ""}`}
+          onClick={() => setView("memory")}
+        >
+          记忆
+        </button>
+      </div>
 
-      {sessions.length === 0 && !error ? (
+      {view === "memory" ? (
+        <MemoryView />
+      ) : error ? (
+        <div className="banner err">读取失败：{error}</div>
+      ) : sessions.length === 0 ? (
         <div className="empty">
           {env && !env.claude_dir_exists ? (
             <>

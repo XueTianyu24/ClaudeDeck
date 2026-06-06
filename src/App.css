@@ -445,3 +445,383 @@ tr.muted {
     opacity: 0.3;
   }
 }
+
+/* ── view tabs（会话 / 记忆 切换）── */
+.view-tabs {
+  display: flex;
+  gap: 6px;
+}
+
+.view-tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  padding: 6px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+
+.view-tab:hover {
+  color: var(--text);
+}
+
+.view-tab.active {
+  background: var(--panel-2);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+/* ── 记忆视图 ── */
+.memory-view {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  min-height: 0;
+}
+
+.mem-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.mem-proj {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.mem-proj:hover {
+  background: var(--panel-2);
+}
+
+.mem-proj.active {
+  background: var(--panel-2);
+  border-color: var(--green);
+}
+
+.mem-proj.global {
+  font-weight: 600;
+}
+
+.mem-sidebar-sep {
+  font-size: 11px;
+  color: var(--dim);
+  padding: 8px 10px 2px;
+  letter-spacing: 0.5px;
+}
+
+.mem-proj-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-proj-count {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.mem-main {
+  flex: 1;
+  overflow-y: auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.mem-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mem-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.mem-group-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--gray);
+}
+
+.mem-group-count {
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 500;
+}
+
+.mem-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.mem-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--gray);
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+}
+
+.mem-card:hover {
+  border-color: var(--dim);
+}
+
+.mem-card.open {
+  grid-column: 1 / -1;
+}
+
+.mem-card.hl {
+  box-shadow: 0 0 0 2px var(--green);
+}
+
+.mem-name {
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.mem-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--dim);
+  line-height: 1.55;
+}
+
+.mem-body {
+  margin: 10px 0 0;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  word-break: break-word;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.mem-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mem-link-chip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--blue);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mem-link-chip:hover:not(:disabled) {
+  background: var(--border);
+}
+
+.mem-link-chip.dead {
+  color: var(--dim);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.mem-err {
+  font-size: 12px;
+  color: var(--amber);
+}
+
+/* 文档型记忆（全局 CLAUDE.md）全文展示 */
+.mem-doc-path {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: "Cascadia Code", "Consolas", monospace;
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.mem-doc {
+  margin: 0;
+  padding: 18px 22px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+/* ── markdown 渲染（全局 CLAUDE.md + 记忆正文共用）── */
+.md {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.md > *:first-child {
+  margin-top: 0;
+}
+.md > *:last-child {
+  margin-bottom: 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4,
+.md h5 {
+  margin: 18px 0 8px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.md h1 {
+  font-size: 19px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+.md h2 {
+  font-size: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.md h3 {
+  font-size: 14px;
+}
+.md h4,
+.md h5 {
+  font-size: 13px;
+  color: var(--dim);
+}
+.md p {
+  margin: 8px 0;
+}
+.md ul,
+.md ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+.md li {
+  margin: 3px 0;
+}
+.md code {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.88em;
+  background: var(--panel-2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.md pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md pre code {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+}
+.md blockquote {
+  margin: 8px 0;
+  padding: 2px 14px;
+  border-left: 3px solid var(--border);
+  color: var(--dim);
+}
+.md a.md-link {
+  color: var(--blue);
+  text-decoration: none;
+  cursor: default;
+}
+.md a.md-link:hover {
+  text-decoration: underline;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12px;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+}
+.md th {
+  background: var(--panel-2);
+  font-weight: 600;
+}
+.md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+.md img {
+  max-width: 100%;
+}
+.md strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 类型配色：左边框条 + 该组标题圆点 */
+.mem-card.t-user {
+  border-left-color: var(--blue);
+}
+.mem-card.t-feedback {
+  border-left-color: var(--amber);
+}
+.mem-card.t-project {
+  border-left-color: var(--green);
+}
+.mem-card.t-reference {
+  border-left-color: #a78bfa;
+}
+
+.mem-group-title.t-user .mem-group-dot {
+  background: var(--blue);
+}
+.mem-group-title.t-feedback .mem-group-dot {
+  background: var(--amber);
+}
+.mem-group-title.t-project .mem-group-dot {
+  background: var(--green);
+}
+.mem-group-title.t-reference .mem-group-dot {
+  background: #a78bfa;
+}
