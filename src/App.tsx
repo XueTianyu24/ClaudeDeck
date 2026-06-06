@@ -7,6 +7,7 @@ import {
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import "./App.css";
+import logo from "./assets/logo.png";
 
 type Session = {
   pid: number | null;
@@ -307,7 +308,7 @@ function App() {
     <main className="app">
       <header className="topbar">
         <div className="brand">
-          <span className="logo">◧</span>
+          <img className="logo" src={logo} alt="ClaudeDeck" />
           <div>
             <h1>ClaudeDeck</h1>
             <p className="subtitle">Claude Code 会话监控</p>

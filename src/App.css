@@ -76,9 +76,10 @@ body {
 }
 
 .logo {
-  font-size: 28px;
-  color: var(--green);
-  line-height: 1;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  display: block;
 }
 
 .brand h1 {
