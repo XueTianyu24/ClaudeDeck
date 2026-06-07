@@ -1,6 +1,6 @@
 # ClaudeDeck
 
-> Claude Code 的本地控制台 —— **会话监控 + 完成通知 + 记忆可视化 + 技能管理**桌面应用。
+> Claude Code 的本地控制台 —— **会话监控 + 完成通知 + 记忆可视化 + 技能管理 + 用量计费**桌面应用。
 
 把散落在 `~/.claude/` 里的状态，变成一块可视化的「驾驶舱」。数据源全部来自本机 `~/.claude/`，无需逆向、无需 hack。
 
@@ -11,6 +11,8 @@
 - 📱 **手机推送** ✅ — 应用内**一键安装** Claude Code hook，把「任务完成 / 等待授权」推到手机（**Bark / iPhone** 或 **PushPlus / 微信**），**应用不用开着也能收到**。
 - 🧠 **记忆可视化** ✅ — 统一面板查看 / 编辑全局 + 项目级记忆：auto-memory 按 frontmatter 自动分类成卡片、`[[name]]` 渲染成**力导向关系图**、Markdown 渲染全局 `CLAUDE.md` 与项目 `MEMORY.md`，支持**编辑回写 + 删除（带回收站，可还原）+ 空目录清理**。
 - 🧩 **技能管理** ✅ — 可视化浏览 `~/.claude/skills/`：卡片查看 SKILL.md、展开看**文件结构树**（含 references）、**标签管理 + 筛选 + 搜索**、一键在资源管理器打开 skill 目录。
+- 💰 **用量计费** ✅ — 统计每个会话的 token 消耗与**等效 API 费用**（按费用高→低排序 + 总计 + 按模型分布），并提供**日 / 周 / 月速览**。费率内置、离线可用；缓存写入按 1h(2×)/5m(1.25×) 分别计价，更贴近真实。
+- 🚀 **Claude 启动器** ✅ — 记录最近用过的工作目录，双击即在该目录开新会话，可选「启动前注入代理等环境变量」。
 
 ## 平台
 
@@ -54,6 +56,10 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 长任务完成时的 Windows 桌面通知（带用时）：
 
 <p align="center"><img src="docs/desktop-notification.png" width="280" alt="Windows 11 桌面通知效果"></p>
+
+顶部「用量计费」标签：统计每个会话的 token 消耗与等效 API 费用（按费用排序 + 总计 + 按模型分布），并可切换**日 / 周 / 月**速览。费用为按 Anthropic 公开 API 价的估算（内置费率表，离线可用；缓存写入按 1h 2×、5m 1.25× 分别计价），订阅用户实际不按量计费，此处为等效成本参考。
+
+<p align="center"><img src="docs/usage-billing.png" width="640" alt="ClaudeDeck 用量计费：会话费用统计与日/周/月速览"></p>
 
 ## 手机推送配置（Bark / 微信 / ntfy）
 
