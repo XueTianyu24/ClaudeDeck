@@ -61,6 +61,8 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 <p align="center"><img src="docs/usage-billing.png" width="640" alt="ClaudeDeck 用量计费：会话费用统计与日/周/月速览"></p>
 
+> 看不懂「为什么 90% 以上都是缓存读」「输入/输出/缓存读写到底差在哪」？见 **[用量计费原理说明](docs/usage-billing-explained.md)**（四种 token 含义 + KV Cache 缓存机制 + 常见误解）。
+
 ## 手机推送配置（Bark / 微信 / ntfy）
 
 > 支持 **Bark（iPhone，免费）/ PushPlus（微信，安卓首选）** 两渠道，在应用里 🔔 →「📱 手机推送」选渠道填 key 即可。完整配置（含微信 PushPlus 的实名认证约 4 元 / 关闭服务号免打扰等坑）见 **[手机推送渠道指南](docs/push-channels.md)**。下面以 Bark 手动配置为例。
