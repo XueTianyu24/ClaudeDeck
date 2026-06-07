@@ -31,6 +31,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "5"
 sysinfo = "0.33"
+chrono = "0.4"
 
 # 免安装 / dev 场景注册 AppUserModelID，让 toast 通知来源显示 ClaudeDeck 而非 PowerShell
 [target.'cfg(windows)'.dependencies]

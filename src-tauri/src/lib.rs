@@ -15,6 +15,7 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 mod aumid;
+mod usage;
 
 /// busy 会话超过这个空闲时长（毫秒）判为疑似卡死。RESEARCH §3 初值。
 const STUCK_THRESHOLD_MS: i64 = 60_000;
@@ -1846,7 +1847,8 @@ pub fn run() {
             get_phone_hook_status,
             install_phone_hook,
             uninstall_phone_hook,
-            test_phone_push
+            test_phone_push,
+            usage::list_token_usage
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

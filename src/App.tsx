@@ -11,6 +11,7 @@ import logo from "./assets/logo.png";
 import MemoryView from "./MemoryView";
 import SkillView from "./SkillView";
 import LauncherView from "./LauncherView";
+import UsageView from "./UsageView";
 
 type Session = {
   pid: number | null;
@@ -196,7 +197,7 @@ function App() {
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [view, setView] = useState<
-    "sessions" | "memory" | "skills" | "launcher"
+    "sessions" | "memory" | "skills" | "launcher" | "usage"
   >("sessions");
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
@@ -623,10 +624,18 @@ function App() {
         >
           技能
         </button>
+        <button
+          className={`view-tab ${view === "usage" ? "active" : ""}`}
+          onClick={() => setView("usage")}
+        >
+          用量计费
+        </button>
       </div>
 
       {view === "launcher" ? (
         <LauncherView />
+      ) : view === "usage" ? (
+        <UsageView />
       ) : view === "skills" ? (
         <SkillView />
       ) : view === "memory" ? (
