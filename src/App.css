@@ -1674,7 +1674,9 @@ tr.muted {
   padding: 8px 0;
 }
 .usage-period-wrap {
-  max-height: 260px;
+  /* 已分页，不再内部滚动；高度随内容，滚动交给外层 .usage-view */
+  flex: none;
+  overflow: visible;
   border-radius: 8px;
 }
 .usage-period-label {
@@ -1762,8 +1764,40 @@ tr.muted {
 }
 
 .usage-table-wrap {
-  flex: 1;
-  min-height: 120px;
+  /* 已分页，不再内部滚动；高度随内容，滚动交给外层 .usage-view */
+  flex: none;
+  min-height: 0;
+  overflow: visible;
+}
+
+/* 分页控件 */
+.usage-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 4px 0 2px;
+}
+.usage-pager-btn {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.usage-pager-btn:hover:not(:disabled) {
+  border-color: var(--green);
+}
+.usage-pager-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.usage-pager-info {
+  font-size: 12px;
+  color: var(--dim);
+  font-family: "Cascadia Code", "Consolas", monospace;
 }
 .usage-table th.num,
 .usage-table td.num {

@@ -109,6 +109,45 @@ type PeriodRow = {
   models: string[];
 };
 
+const SESSION_PAGE_SIZE = 12;
+const PERIOD_PAGE_SIZE = 10;
+
+/** 简单分页控件：‹ 上一页 · 第 x/y 页 · 下一页 ›。仅 1 页时不渲染。 */
+function Pager({
+  page,
+  pageCount,
+  total,
+  onPage,
+}: {
+  page: number;
+  pageCount: number;
+  total: number;
+  onPage: (p: number) => void;
+}) {
+  if (pageCount <= 1) return null;
+  return (
+    <div className="usage-pager">
+      <button
+        className="usage-pager-btn"
+        disabled={page <= 0}
+        onClick={() => onPage(page - 1)}
+      >
+        ‹ 上一页
+      </button>
+      <span className="usage-pager-info">
+        第 {page + 1}/{pageCount} 页 · 共 {total} 条
+      </span>
+      <button
+        className="usage-pager-btn"
+        disabled={page >= pageCount - 1}
+        onClick={() => onPage(page + 1)}
+      >
+        下一页 ›
+      </button>
+    </div>
+  );
+}
+
 function ymd(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
     d.getDate(),
@@ -177,6 +216,8 @@ export default function UsageView() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState<Period>("day");
+  const [sessionPage, setSessionPage] = useState(0);
+  const [periodPage, setPeriodPage] = useState(0);
 
   async function reload() {
     setLoading(true);
@@ -205,6 +246,35 @@ export default function UsageView() {
   const maxPeriodCost = useMemo(
     () => Math.max(1e-9, ...periodRows.map((p) => p.cost)),
     [periodRows],
+  );
+
+  // 切日/周/月时回到第 1 页
+  useEffect(() => setPeriodPage(0), [period]);
+  // 数据重扫后两张表都回到第 1 页
+  useEffect(() => {
+    setPeriodPage(0);
+    setSessionPage(0);
+  }, [report]);
+
+  const periodPageCount = Math.max(1, Math.ceil(periodRows.length / PERIOD_PAGE_SIZE));
+  const periodSlice = useMemo(
+    () =>
+      periodRows.slice(
+        periodPage * PERIOD_PAGE_SIZE,
+        periodPage * PERIOD_PAGE_SIZE + PERIOD_PAGE_SIZE,
+      ),
+    [periodRows, periodPage],
+  );
+
+  const sessions = report?.sessions ?? [];
+  const sessionPageCount = Math.max(1, Math.ceil(sessions.length / SESSION_PAGE_SIZE));
+  const sessionSlice = useMemo(
+    () =>
+      sessions.slice(
+        sessionPage * SESSION_PAGE_SIZE,
+        sessionPage * SESSION_PAGE_SIZE + SESSION_PAGE_SIZE,
+      ),
+    [sessions, sessionPage],
   );
 
   if (err) {
@@ -323,7 +393,7 @@ export default function UsageView() {
                 </tr>
               </thead>
               <tbody>
-                {periodRows.map((p) => (
+                {periodSlice.map((p) => (
                   <tr key={p.key}>
                     <td className="usage-period-label">{p.label}</td>
                     <td className="num mono">{fmtTokens(p.input)}</td>
@@ -348,6 +418,12 @@ export default function UsageView() {
             </table>
           </div>
         )}
+        <Pager
+          page={periodPage}
+          pageCount={periodPageCount}
+          total={periodRows.length}
+          onPage={setPeriodPage}
+        />
       </div>
 
       {/* 按模型分组 */}
@@ -389,7 +465,7 @@ export default function UsageView() {
             </tr>
           </thead>
           <tbody>
-            {r.sessions.map((s) => (
+            {sessionSlice.map((s) => (
               <tr key={s.session_id} title={`会话 ${s.session_id}\n${fmtDate(s.last_ts)}`}>
                 <td>
                   <div className="usage-proj">{s.project_label || s.project}</div>
@@ -426,6 +502,12 @@ export default function UsageView() {
           </tfoot>
         </table>
       </div>
+      <Pager
+        page={sessionPage}
+        pageCount={sessionPageCount}
+        total={sessions.length}
+        onPage={setSessionPage}
+      />
     </div>
   );
 }
