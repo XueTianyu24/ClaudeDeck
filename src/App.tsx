@@ -10,6 +10,7 @@ import "./App.css";
 import logo from "./assets/logo.png";
 import MemoryView from "./MemoryView";
 import SkillView from "./SkillView";
+import LauncherView from "./LauncherView";
 
 type Session = {
   pid: number | null;
@@ -164,7 +165,9 @@ type PhoneStatus = {
   installed: boolean;
   script_exists: boolean;
   bark_key: string | null;
+  bark_enabled: boolean;
   pushplus_token: string | null;
+  pushplus_enabled: boolean;
   threshold_sec: number | null;
   script_path: string;
 };
@@ -190,9 +193,9 @@ function App() {
   );
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
-  const [view, setView] = useState<"sessions" | "memory" | "skills">(
-    "sessions"
-  );
+  const [view, setView] = useState<
+    "sessions" | "memory" | "skills" | "launcher"
+  >("sessions");
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -200,7 +203,9 @@ function App() {
   // 手机推送（多渠道 hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
   const [barkKey, setBarkKey] = useState("");
+  const [barkEnabled, setBarkEnabled] = useState(true);
   const [pushplusToken, setPushplusToken] = useState("");
+  const [pushplusEnabled, setPushplusEnabled] = useState(true);
   const [phoneThresh, setPhoneThresh] = useState(30);
   const [phoneBusy, setPhoneBusy] = useState(false);
   const [phoneMsg, setPhoneMsg] = useState<string | null>(null);
@@ -271,7 +276,9 @@ function App() {
       const st = await invoke<PhoneStatus>("get_phone_hook_status");
       setPhone(st);
       if (st.bark_key) setBarkKey(st.bark_key);
+      setBarkEnabled(st.bark_enabled);
       if (st.pushplus_token) setPushplusToken(st.pushplus_token);
+      setPushplusEnabled(st.pushplus_enabled);
       if (st.threshold_sec != null) setPhoneThresh(st.threshold_sec);
     } catch {
       /* ignore */
@@ -298,7 +305,9 @@ function App() {
     try {
       const st = await invoke<PhoneStatus>("install_phone_hook", {
         barkKey: barkKey.trim(),
+        barkEnabled,
         pushplusToken: pushplusToken.trim(),
+        pushplusEnabled,
         thresholdSec: phoneThresh,
       });
       setPhone(st);
@@ -438,7 +447,7 @@ function App() {
                 <div className="phone-section">
                   <h3>📱 手机推送</h3>
                   <p className="phone-hint">
-                    任务完成 / 等待授权时推到手机，应用不用开着。两个渠道可同时开。
+                    任务完成 / 等待授权时推到手机，应用不用开着。两个渠道各自有「启用」开关，可同时推也可只留一个。
                     {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
                   </p>
                   {env && !env.curl_available && (
@@ -449,7 +458,18 @@ function App() {
                   )}
 
                   <div className="push-channel">
-                    <div className="push-channel-title">🍎 Bark（iPhone，免费）</div>
+                    <div className="push-channel-title">
+                      <span>🍎 Bark（iPhone，免费）</span>
+                      <label className="ch-toggle" title="启用该渠道">
+                        <input
+                          type="checkbox"
+                          checked={barkEnabled}
+                          disabled={!barkKey.trim()}
+                          onChange={(e) => setBarkEnabled(e.target.checked)}
+                        />
+                        启用
+                      </label>
+                    </div>
                     <label className="field">
                       <input
                         type="text"
@@ -471,7 +491,18 @@ function App() {
                   </div>
 
                   <div className="push-channel">
-                    <div className="push-channel-title">💬 PushPlus（微信）</div>
+                    <div className="push-channel-title">
+                      <span>💬 PushPlus（微信）</span>
+                      <label className="ch-toggle" title="启用该渠道">
+                        <input
+                          type="checkbox"
+                          checked={pushplusEnabled}
+                          disabled={!pushplusToken.trim()}
+                          onChange={(e) => setPushplusEnabled(e.target.checked)}
+                        />
+                        启用
+                      </label>
+                    </div>
                     <label className="field">
                       <input
                         type="text"
@@ -510,7 +541,11 @@ function App() {
                     <button
                       className="test-btn"
                       disabled={
-                        phoneBusy || (!barkKey.trim() && !pushplusToken.trim())
+                        phoneBusy ||
+                        !(
+                          (barkKey.trim() && barkEnabled) ||
+                          (pushplusToken.trim() && pushplusEnabled)
+                        )
                       }
                       onClick={installPhone}
                     >
@@ -546,6 +581,12 @@ function App() {
 
       <div className="view-tabs">
         <button
+          className={`view-tab ${view === "launcher" ? "active" : ""}`}
+          onClick={() => setView("launcher")}
+        >
+          启动器
+        </button>
+        <button
           className={`view-tab ${view === "sessions" ? "active" : ""}`}
           onClick={() => setView("sessions")}
         >
@@ -565,7 +606,9 @@ function App() {
         </button>
       </div>
 
-      {view === "skills" ? (
+      {view === "launcher" ? (
+        <LauncherView />
+      ) : view === "skills" ? (
         <SkillView />
       ) : view === "memory" ? (
         <MemoryView />

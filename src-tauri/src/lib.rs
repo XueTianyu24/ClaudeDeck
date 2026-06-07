@@ -416,6 +416,17 @@ fn file_mtime_ms(path: &Path) -> i64 {
         .unwrap_or(0)
 }
 
+/// 文件/目录创建时间（毫秒）；平台不支持或取不到则退回修改时间。
+fn file_ctime_ms(path: &Path) -> i64 {
+    path.metadata()
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .filter(|&v| v > 0)
+        .unwrap_or_else(|| file_mtime_ms(path))
+}
+
 /// 解析一个 memory .md：拆 frontmatter（兼容两种格式）+ 正文。
 fn parse_memory(file: String, content: &str, mtime: i64) -> MemoryNode {
     // 不以 --- 开头：无 frontmatter，全是正文
@@ -836,6 +847,8 @@ struct SkillInfo {
     /// 是否含 references/ 子目录
     has_references: bool,
     mtime: i64,
+    /// skill 目录创建时间（毫秒，用于「按添加日期」排序）
+    created: i64,
     /// 用户打的标签（来自独立标签文件）
     tags: Vec<String>,
 }
@@ -934,6 +947,7 @@ fn list_skills() -> Result<Vec<SkillInfo>, String> {
             file_count,
             has_references,
             mtime: file_mtime_ms(&skill_md),
+            created: file_ctime_ms(&path),
             tags: t,
         });
     }
@@ -1069,6 +1083,167 @@ fn set_skill_tags(name: String, tags: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
+// ── Claude 启动器（ClaudeDeck 自有配置，独立存储）─────────────────────
+// 存 %APPDATA%\ClaudeDeck\launcher.json，与任何外部工具无耦合
+// （开源用户不一定装其他启动器，故不共享配置）。
+
+const LAUNCHER_DEFAULT_PRE_CMD: &str = "$env:HTTP_PROXY = \"http://127.0.0.1:7897\"\r\n$env:HTTPS_PROXY = \"http://127.0.0.1:7897\"\r\n$env:ALL_PROXY = \"http://127.0.0.1:7897\"";
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecentDir {
+    path: String,
+    last_opened_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct LauncherConfig {
+    recent_dirs: Vec<RecentDir>,
+    pre_cmd_enabled: bool,
+    pre_cmd: String,
+}
+
+impl Default for LauncherConfig {
+    fn default() -> Self {
+        Self {
+            recent_dirs: vec![],
+            pre_cmd_enabled: false,
+            pre_cmd: LAUNCHER_DEFAULT_PRE_CMD.to_string(),
+        }
+    }
+}
+
+fn launcher_config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|c| c.join("ClaudeDeck"))
+}
+
+fn launcher_config_path() -> Option<PathBuf> {
+    launcher_config_dir().map(|d| d.join("launcher.json"))
+}
+
+fn load_launcher_config() -> LauncherConfig {
+    let Some(path) = launcher_config_path() else {
+        return LauncherConfig::default();
+    };
+    if !path.exists() {
+        return LauncherConfig::default();
+    }
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => return LauncherConfig::default(),
+    };
+    let mut cfg: LauncherConfig = serde_json::from_str(&text).unwrap_or_default();
+    cfg.recent_dirs
+        .sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+    cfg
+}
+
+fn save_launcher_config(cfg: &LauncherConfig) -> Result<(), String> {
+    let dir = launcher_config_dir().ok_or("无法定位启动器配置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let path = launcher_config_path().ok_or("无法定位启动器配置文件")?;
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
+}
+
+fn launcher_touch_and_sort(cfg: &mut LauncherConfig, path: &str) {
+    let ts = now_secs();
+    if let Some(entry) = cfg.recent_dirs.iter_mut().find(|r| r.path == path) {
+        entry.last_opened_at = ts;
+    } else {
+        cfg.recent_dirs.push(RecentDir {
+            path: path.to_string(),
+            last_opened_at: ts,
+        });
+    }
+    cfg.recent_dirs
+        .sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
+}
+
+#[cfg(windows)]
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
+    // 我们要的就是弹出一个终端窗口跑 claude，所以不加 CREATE_NO_WINDOW。
+    let r = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+        let full = format!("{}\nclaude", pre_cmd.trim());
+        Command::new("powershell")
+            .args(["-NoExit", "-Command", &full])
+            .current_dir(dir)
+            .spawn()
+    } else {
+        Command::new("cmd")
+            .args(["/k", "claude"])
+            .current_dir(dir)
+            .spawn()
+    };
+    r.map(|_| ()).map_err(|e| format!("启动 Claude 失败: {e}"))
+}
+
+#[cfg(not(windows))]
+fn spawn_claude(dir: &str, _pre_cmd_enabled: bool, _pre_cmd: &str) -> Result<(), String> {
+    // mac/linux 终端拉起留待平台适配；先直接 spawn claude。
+    Command::new("claude")
+        .current_dir(dir)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动 Claude 失败: {e}"))
+}
+
+#[tauri::command]
+fn launcher_get_config() -> LauncherConfig {
+    load_launcher_config()
+}
+
+#[tauri::command]
+fn launcher_add_dir(path: String) -> Result<LauncherConfig, String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err("路径为空".into());
+    }
+    let mut cfg = load_launcher_config();
+    launcher_touch_and_sort(&mut cfg, p);
+    save_launcher_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn launcher_remove_dir(path: String) -> Result<LauncherConfig, String> {
+    let mut cfg = load_launcher_config();
+    cfg.recent_dirs.retain(|r| r.path != path);
+    save_launcher_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn launcher_save_precmd(enabled: bool, pre_cmd: String) -> Result<(), String> {
+    let mut cfg = load_launcher_config();
+    cfg.pre_cmd_enabled = enabled;
+    cfg.pre_cmd = pre_cmd;
+    save_launcher_config(&cfg)
+}
+
+#[tauri::command]
+fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
+    let p = path.trim().to_string();
+    if p.is_empty() {
+        return Err("路径为空".into());
+    }
+    if !Path::new(&p).exists() {
+        return Err(format!("目录不存在：{p}"));
+    }
+    let mut cfg = load_launcher_config();
+    launcher_touch_and_sort(&mut cfg, &p);
+    save_launcher_config(&cfg)?;
+    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd)?;
+    Ok(cfg)
+}
+
 #[tauri::command]
 fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConfig>>>) {
     if let Ok(mut g) = state.lock() {
@@ -1108,7 +1283,9 @@ $sid = if ($j -and $j.session_id) { [string]$j.session_id } else { 'unknown' }
 $stateDir = Join-Path $env:USERPROFILE '.claude\hooks\.state'
 $stateFile = Join-Path $stateDir $sid
 $barkKey = '__BARK_KEY__'
+$barkEnabled = __BARK_ENABLED__
 $pushplusToken = '__PUSHPLUS_TOKEN__'
+$pushplusEnabled = __PUSHPLUS_ENABLED__
 $THRESHOLD_MS = __THRESHOLD_MS__
 if ($ev -eq 'UserPromptSubmit') {
     try {
@@ -1140,12 +1317,12 @@ elseif ($ev -eq 'Notification') {
 }
 else { exit 0 }
 function Enc([string]$s) { [uri]::EscapeDataString($s) }
-# 两个渠道独立，谁有 key 就推谁，可同时推
-if ($barkKey) {
+# 两个渠道独立：key 非空且该渠道已启用才推，可同时推也可只推其一
+if ($barkKey -and $barkEnabled) {
     $data = "title=$(Enc $title)&body=$(Enc $body)&group=ClaudeDeck&sound=$sound"
     & curl.exe -s -X POST "https://api.day.app/$barkKey" --data $data > $null
 }
-if ($pushplusToken) {
+if ($pushplusToken -and $pushplusEnabled) {
     $data = "token=$pushplusToken&title=$(Enc $title)&content=$(Enc $body)"
     & curl.exe -s -X POST "https://www.pushplus.plus/send" --data $data > $null
 }
@@ -1157,10 +1334,14 @@ exit 0
 struct PhoneHookStatus {
     installed: bool,
     script_exists: bool,
-    /// Bark key（iPhone），为空表示未启用该渠道
+    /// Bark key（iPhone），为空表示未配置该渠道
     bark_key: Option<String>,
-    /// PushPlus token（微信），为空表示未启用该渠道
+    /// Bark 渠道是否启用（key 已填时才有意义）
+    bark_enabled: bool,
+    /// PushPlus token（微信），为空表示未配置该渠道
     pushplus_token: Option<String>,
+    /// PushPlus 渠道是否启用
+    pushplus_enabled: bool,
     threshold_sec: Option<i64>,
     script_path: String,
 }
@@ -1222,16 +1403,21 @@ fn push_hook(root: &mut Value, event: &str, group: Value) {
 
 fn write_phone_script(
     bark_key: &str,
+    bark_enabled: bool,
     pushplus_token: &str,
+    pushplus_enabled: bool,
     threshold_ms: i64,
 ) -> Result<PathBuf, String> {
     let path = phone_script_path()?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
     }
+    let ps_bool = |b: bool| if b { "$true" } else { "$false" };
     let content = PHONE_HOOK_SCRIPT
         .replace("__BARK_KEY__", bark_key)
+        .replace("__BARK_ENABLED__", ps_bool(bark_enabled))
         .replace("__PUSHPLUS_TOKEN__", pushplus_token)
+        .replace("__PUSHPLUS_ENABLED__", ps_bool(pushplus_enabled))
         .replace("__THRESHOLD_MS__", &threshold_ms.to_string());
     // 前置 UTF-8 BOM
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
@@ -1276,6 +1462,9 @@ fn phone_hook_status() -> PhoneHookStatus {
     let mut bark_key = None;
     let mut pushplus_token = None;
     let mut threshold_sec = None;
+    // 老脚本没有 enabled 标志：key 已填则默认视为启用（向后兼容）
+    let mut bark_enabled = true;
+    let mut pushplus_enabled = true;
     if script_exists {
         if let Ok(content) = fs::read_to_string(&script) {
             bark_key = extract_between(&content, "$barkKey = '", "'").filter(|k| !k.is_empty());
@@ -1284,13 +1473,21 @@ fn phone_hook_status() -> PhoneHookStatus {
             threshold_sec = extract_between(&content, "$THRESHOLD_MS = ", "\n")
                 .and_then(|s| s.trim().parse::<i64>().ok())
                 .map(|ms| ms / 1000);
+            if let Some(v) = extract_between(&content, "$barkEnabled = ", "\n") {
+                bark_enabled = v.trim().eq_ignore_ascii_case("$true");
+            }
+            if let Some(v) = extract_between(&content, "$pushplusEnabled = ", "\n") {
+                pushplus_enabled = v.trim().eq_ignore_ascii_case("$true");
+            }
         }
     }
     PhoneHookStatus {
         installed: script_exists && settings_has_our_hook(),
         script_exists,
         bark_key,
+        bark_enabled,
         pushplus_token,
+        pushplus_enabled,
         threshold_sec,
         script_path: script.to_string_lossy().to_string(),
     }
@@ -1313,7 +1510,9 @@ fn norm_channel(channel: &str) -> Result<String, String> {
 #[tauri::command]
 fn install_phone_hook(
     bark_key: String,
+    bark_enabled: bool,
     pushplus_token: String,
+    pushplus_enabled: bool,
     threshold_sec: i64,
 ) -> Result<PhoneHookStatus, String> {
     let bark_key = bark_key.trim().to_string();
@@ -1321,12 +1520,24 @@ fn install_phone_hook(
     if bark_key.is_empty() && pushplus_token.is_empty() {
         return Err("至少填一个渠道的 key".into());
     }
+    // 至少要有一个「已填 key 且启用」的渠道，否则装了也不会推
+    let bark_active = !bark_key.is_empty() && bark_enabled;
+    let pushplus_active = !pushplus_token.is_empty() && pushplus_enabled;
+    if !bark_active && !pushplus_active {
+        return Err("至少启用一个已填 key 的渠道".into());
+    }
     // key 不能含单引号(会破坏脚本里 '...' 包裹)
     if bark_key.contains('\'') || pushplus_token.contains('\'') {
         return Err("key 含非法字符（单引号）".into());
     }
     let thr_ms = threshold_sec.max(0) * 1000;
-    let script = write_phone_script(&bark_key, &pushplus_token, thr_ms)?;
+    let script = write_phone_script(
+        &bark_key,
+        bark_enabled,
+        &pushplus_token,
+        pushplus_enabled,
+        thr_ms,
+    )?;
 
     let settings = claude_dir()?.join("settings.json");
     // 改前备份
@@ -1531,6 +1742,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(cfg.clone())
         .setup(move |app| {
             // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
@@ -1564,6 +1776,11 @@ pub fn run() {
             list_skill_files,
             open_skill_dir,
             set_skill_tags,
+            launcher_get_config,
+            launcher_add_dir,
+            launcher_remove_dir,
+            launcher_save_precmd,
+            launcher_launch,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,

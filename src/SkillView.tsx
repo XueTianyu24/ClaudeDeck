@@ -10,8 +10,11 @@ type SkillInfo = {
   file_count: number;
   has_references: boolean;
   mtime: number;
+  created: number;
   tags: string[];
 };
+
+type SortKey = "name" | "created_desc" | "created_asc";
 type DocView = { path: string; exists: boolean; content: string; mtime: number };
 type SkillFile = { path: string; is_dir: boolean; size: number };
 
@@ -43,6 +46,7 @@ export default function SkillView() {
   const [err, setErr] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterTag, setFilterTag] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("name");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [docMap, setDocMap] = useState<Record<string, DocView>>({});
   const [treeMap, setTreeMap] = useState<Record<string, SkillFile[]>>({});
@@ -68,7 +72,7 @@ export default function SkillView() {
   }, [skills]);
 
   const filtered = useMemo(() => {
-    return skills.filter((s) => {
+    const list = skills.filter((s) => {
       if (search) {
         const q = search.toLowerCase();
         const hay = `${s.title || ""} ${s.name} ${s.description || ""}`.toLowerCase();
@@ -78,7 +82,15 @@ export default function SkillView() {
       if (filterTag) return s.tags.includes(filterTag);
       return true;
     });
-  }, [skills, search, filterTag]);
+    const byName = (a: SkillInfo, b: SkillInfo) =>
+      a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+    if (sortKey === "created_desc")
+      list.sort((a, b) => b.created - a.created || byName(a, b));
+    else if (sortKey === "created_asc")
+      list.sort((a, b) => a.created - b.created || byName(a, b));
+    else list.sort(byName);
+    return list;
+  }, [skills, search, filterTag, sortKey]);
 
   async function toggle(name: string) {
     setExpanded((s) => {
@@ -150,6 +162,16 @@ export default function SkillView() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <select
+          className="skill-sort"
+          value={sortKey}
+          onChange={(e) => setSortKey(e.target.value as SortKey)}
+          title="排序方式"
+        >
+          <option value="name">名称 A→Z</option>
+          <option value="created_desc">添加日期（新→旧）</option>
+          <option value="created_asc">添加日期（旧→新）</option>
+        </select>
         <span className="mem-toolbar-hint">
           {filtered.length} / {skills.length} 个技能
         </span>
