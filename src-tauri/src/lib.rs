@@ -2,13 +2,16 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sysinfo::{Pid, System};
-use tauri::Emitter;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
 
 mod aumid;
@@ -1244,6 +1247,12 @@ fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
     Ok(cfg)
 }
 
+/// 前端下发「关窗是否隐藏到托盘」（true=隐藏常驻，false=关窗即退出）。
+#[tauri::command]
+fn set_close_to_tray(enabled: bool, state: tauri::State<Arc<AtomicBool>>) {
+    state.store(enabled, Ordering::Relaxed);
+}
+
 #[tauri::command]
 fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConfig>>>) {
     if let Ok(mut g) = state.lock() {
@@ -1735,15 +1744,27 @@ fn notifier_loop(app: tauri::AppHandle, cfg: Arc<Mutex<NotifyConfig>>) {
     }
 }
 
+/// 从托盘唤回主窗口：取消最小化 + 显示 + 置前。
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let cfg = Arc::new(Mutex::new(NotifyConfig::default()));
+    // 关窗行为：默认隐藏到托盘常驻（前端可下发改成关窗即退出）。
+    let close_to_tray = Arc::new(AtomicBool::new(true));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(cfg.clone())
+        .manage(close_to_tray.clone())
         .setup(move |app| {
             // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
             // app_id 必须 == tauri.conf.json 的 identifier，否则与通知插件用的 AUMID 不一致。
@@ -1754,7 +1775,46 @@ pub fn run() {
             let handle = app.handle().clone();
             let cfg_thread = cfg.clone();
             std::thread::spawn(move || notifier_loop(handle, cfg_thread));
+
+            // 系统托盘：关窗最小化到托盘后，左键托盘图标唤回，菜单可真正退出。
+            // 让通知 / 提示音 / 后端通知线程在后台常驻（关窗不再杀进程）。
+            let show_i = MenuItem::with_id(app, "show", "显示主界面", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "退出 ClaudeDeck", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("ClaudeDeck — Claude Code 控制台")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关窗行为按设置走：隐藏到托盘（默认，真正退出走托盘菜单）或直接退出。
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let hide = window
+                    .state::<Arc<AtomicBool>>()
+                    .load(Ordering::Relaxed);
+                if hide {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             list_sessions,
@@ -1781,6 +1841,7 @@ pub fn run() {
             launcher_remove_dir,
             launcher_save_precmd,
             launcher_launch,
+            set_close_to_tray,
             set_notify_config,
             get_phone_hook_status,
             install_phone_hook,

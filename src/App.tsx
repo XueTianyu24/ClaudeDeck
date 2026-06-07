@@ -97,6 +97,7 @@ type NotifySettings = {
   thresholdSec: number; // 完成通知的最小 busy 时长
   dingSec: number; // 提示音持续时长（循环 ding）
   mute: boolean; // 静音（关声音，仍弹窗）
+  closeToTray: boolean; // 关窗时隐藏到托盘常驻（false=关窗即退出）
 };
 
 const DEFAULT_SETTINGS: NotifySettings = {
@@ -105,6 +106,7 @@ const DEFAULT_SETTINGS: NotifySettings = {
   thresholdSec: 30,
   dingSec: 2.5,
   mute: false,
+  closeToTray: true,
 };
 
 function loadSettings(): NotifySettings {
@@ -243,6 +245,9 @@ function App() {
         threshold_ms: settings.thresholdSec * 1000,
       },
     }).catch(() => {});
+    invoke("set_close_to_tray", { enabled: settings.closeToTray }).catch(
+      () => {}
+    );
   }, [settings]);
 
   useEffect(() => {
@@ -443,6 +448,20 @@ function App() {
                 <button className="test-btn" onClick={testNotify}>
                   发送测试通知
                 </button>
+
+                <label className="row-opt">
+                  <input
+                    type="checkbox"
+                    checked={settings.closeToTray}
+                    onChange={(e) =>
+                      setSettings((s) => ({
+                        ...s,
+                        closeToTray: e.target.checked,
+                      }))
+                    }
+                  />
+                  关闭窗口时最小化到托盘（后台继续监控/通知）
+                </label>
 
                 <div className="phone-section">
                   <h3>📱 手机推送</h3>
