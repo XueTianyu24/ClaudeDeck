@@ -1,0 +1,27 @@
+# Codemagic CI —— 在免费 macOS(M2) runner 上构建 ClaudeDeck 的 .dmg
+# 用途：绕开被锁的 GitHub Actions，用 Codemagic 自己的 Mac 机器编 mac 包。
+# 触发：在 Codemagic 控制台手动 Start build，或连上后按需触发。
+# 免费额度：个人账户 500 分钟/月，macOS M2（Apple Silicon，产物为 arm64，适配 M4 Pro）。
+workflows:
+  macos-dmg:
+    name: ClaudeDeck macOS (arm64) dmg
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: lts
+    scripts:
+      - name: 安装 Rust 工具链
+        script: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-apple-darwin
+          rustc --version && cargo --version
+      - name: 安装前端依赖
+        script: npm ci
+      - name: Tauri 构建（出 .app / .dmg）
+        script: |
+          source "$HOME/.cargo/env"
+          npm run tauri build -- --target aarch64-apple-darwin
+    artifacts:
+      - src-tauri/target/**/release/bundle/dmg/*.dmg
+      - src-tauri/target/**/release/bundle/macos/*.app
