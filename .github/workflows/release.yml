@@ -1,0 +1,60 @@
+name: release
+
+# 打 v* tag 时触发（如 git tag v0.8.3 && git push origin v0.8.3）。
+# 也可在 Actions 页手动 workflow_dispatch（选一个 tag 跑）。
+# macOS dmg 只能在 macOS runner 上构建（Tauri 限制），故用矩阵跑真 macOS 虚拟机。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macos-latest 现为 Apple Silicon(arm64)，对应 M4 Pro
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: windows-latest
+            args: ''
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: install frontend dependencies
+        run: npm ci
+
+      # tagName 仅在 tag 触发时给值 → 打 tag 才建 Release（草稿）；
+      # 手动 workflow_dispatch（分支上）tagName 为空 → 只编译验证、不发布。
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: ${{ startsWith(github.ref, 'refs/tags/') && format('ClaudeDeck {0}', github.ref_name) || '' }}
+          releaseBody: '各平台安装包见下方资产。改动详见仓库 CHANGELOG.md。'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
