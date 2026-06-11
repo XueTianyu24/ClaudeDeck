@@ -12,6 +12,17 @@ type SkillInfo = {
   mtime: number;
   created: number;
   tags: string[];
+  note: string | null;
+};
+
+type SkillTrashMeta = {
+  id: string;
+  name: string;
+  title: string | null;
+  description: string | null;
+  tags: string[];
+  note: string | null;
+  deleted_at: number;
 };
 
 type SortKey = "name" | "created_desc" | "created_asc";
@@ -52,6 +63,10 @@ export default function SkillView() {
   const [treeMap, setTreeMap] = useState<Record<string, SkillFile[]>>({});
   const [editingTags, setEditingTags] = useState<string | null>(null);
   const [tagInput, setTagInput] = useState("");
+  const [editingNote, setEditingNote] = useState<string | null>(null);
+  const [noteInput, setNoteInput] = useState("");
+  const [trashMode, setTrashMode] = useState(false);
+  const [trash, setTrash] = useState<SkillTrashMeta[]>([]);
 
   async function reload() {
     try {
@@ -65,17 +80,37 @@ export default function SkillView() {
     reload();
   }, []);
 
-  const allTags = useMemo(() => {
-    const set = new Set<string>();
-    skills.forEach((s) => s.tags.forEach((t) => set.add(t)));
-    return [...set].sort();
+  async function loadTrash() {
+    try {
+      setTrash(await invoke<SkillTrashMeta[]>("list_skill_trash"));
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  // 每个标签下的技能数（含「全部」「未标记」）
+  const tagCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    let untagged = 0;
+    skills.forEach((s) => {
+      if (s.tags.length === 0) untagged++;
+      s.tags.forEach((t) => m.set(t, (m.get(t) || 0) + 1));
+    });
+    return { map: m, untagged, total: skills.length };
   }, [skills]);
+
+  const allTags = useMemo(
+    () => [...tagCounts.map.keys()].sort(),
+    [tagCounts]
+  );
 
   const filtered = useMemo(() => {
     const list = skills.filter((s) => {
       if (search) {
         const q = search.toLowerCase();
-        const hay = `${s.title || ""} ${s.name} ${s.description || ""}`.toLowerCase();
+        const hay = `${s.title || ""} ${s.name} ${s.description || ""} ${
+          s.note || ""
+        } ${s.tags.join(" ")}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       if (filterTag === UNTAGGED) return s.tags.length === 0;
@@ -118,8 +153,15 @@ export default function SkillView() {
   }
 
   function startEditTags(s: SkillInfo) {
+    setEditingNote(null);
     setEditingTags(s.name);
     setTagInput(s.tags.join(", "));
+  }
+
+  function startEditNote(s: SkillInfo) {
+    setEditingTags(null);
+    setEditingNote(s.name);
+    setNoteInput(s.note || "");
   }
 
   async function openDir(name: string) {
@@ -144,12 +186,131 @@ export default function SkillView() {
     }
   }
 
+  async function saveNote(name: string) {
+    try {
+      await invoke("set_skill_note", { name, note: noteInput.trim() });
+      setEditingNote(null);
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function deleteSkill(s: SkillInfo) {
+    if (
+      !confirm(
+        `删除技能「${s.title || s.name}」？\n整个目录将移入回收站，可随时还原。`
+      )
+    )
+      return;
+    try {
+      await invoke("delete_skill", { name: s.name });
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  function openTrash() {
+    setTrashMode(true);
+    loadTrash();
+  }
+
+  async function restoreItem(id: string) {
+    try {
+      await invoke("restore_skill_trash", { id });
+      await loadTrash();
+      await reload();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function purgeItem(id?: string) {
+    const ok = confirm(
+      id ? "彻底删除这个技能？不可恢复。" : "清空回收站？所有技能不可恢复。"
+    );
+    if (!ok) return;
+    try {
+      await invoke("purge_skill_trash", { id: id ?? null });
+      await loadTrash();
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
   if (err) return <div className="banner err">读取技能失败：{err}</div>;
+
+  if (trashMode) {
+    return (
+      <div className="skill-view">
+        <div className="skill-toolbar">
+          <button
+            className="mem-toolbar-btn active"
+            onClick={() => setTrashMode(false)}
+          >
+            ← 返回技能列表
+          </button>
+          <span className="mem-toolbar-title">🗑 技能回收站</span>
+          <span className="mem-toolbar-hint">{trash.length} 项</span>
+          {trash.length > 0 && (
+            <button className="mem-toolbar-btn" onClick={() => purgeItem()}>
+              清空回收站
+            </button>
+          )}
+        </div>
+        {trash.length === 0 ? (
+          <div className="empty">
+            <p>回收站是空的</p>
+            <span>删除的技能会移到这里，可随时还原</span>
+          </div>
+        ) : (
+          <div className="trash-list">
+            {trash.map((t) => (
+              <div className="trash-item" key={t.id}>
+                <div className="trash-info">
+                  <div className="trash-name">{t.title || t.name}</div>
+                  <div className="trash-meta">
+                    {t.name}
+                    {t.tags.length > 0 && ` · 🏷 ${t.tags.join(", ")}`} ·{" "}
+                    {fmtAgo(t.deleted_at)}删除
+                  </div>
+                  {t.note && <div className="skill-note-text">📝 {t.note}</div>}
+                </div>
+                <div className="trash-actions">
+                  <button
+                    className="mem-toolbar-btn active"
+                    onClick={() => restoreItem(t.id)}
+                  >
+                    还原
+                  </button>
+                  <button
+                    className="mem-toolbar-btn"
+                    onClick={() => purgeItem(t.id)}
+                  >
+                    彻底删除
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   if (!skills.length)
     return (
-      <div className="empty">
-        <p>未发现任何技能</p>
-        <span>~/.claude/skills/ 下没有带 SKILL.md 的技能目录</span>
+      <div className="skill-view">
+        <div className="skill-toolbar">
+          <button className="mem-toolbar-btn" onClick={openTrash}>
+            🗑 回收站
+          </button>
+        </div>
+        <div className="empty">
+          <p>未发现任何技能</p>
+          <span>~/.claude/skills/ 下没有带 SKILL.md 的技能目录</span>
+        </div>
       </div>
     );
 
@@ -158,7 +319,7 @@ export default function SkillView() {
       <div className="skill-toolbar">
         <input
           className="skill-search"
-          placeholder="搜索技能名 / 描述…"
+          placeholder="搜索技能名 / 描述 / 备注 / 标签…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -175,6 +336,9 @@ export default function SkillView() {
         <span className="mem-toolbar-hint">
           {filtered.length} / {skills.length} 个技能
         </span>
+        <button className="mem-toolbar-btn" onClick={openTrash}>
+          🗑 回收站
+        </button>
       </div>
 
       <div className="skill-filter">
@@ -182,13 +346,13 @@ export default function SkillView() {
           className={`skill-chip ${filterTag === null ? "active" : ""}`}
           onClick={() => setFilterTag(null)}
         >
-          全部
+          全部 <span className="skill-chip-count">{tagCounts.total}</span>
         </button>
         <button
           className={`skill-chip ${filterTag === UNTAGGED ? "active" : ""}`}
           onClick={() => setFilterTag(UNTAGGED)}
         >
-          未标记
+          未标记 <span className="skill-chip-count">{tagCounts.untagged}</span>
         </button>
         {allTags.map((t) => (
           <button
@@ -196,7 +360,8 @@ export default function SkillView() {
             className={`skill-chip ${filterTag === t ? "active" : ""}`}
             onClick={() => setFilterTag(t)}
           >
-            {t}
+            {t}{" "}
+            <span className="skill-chip-count">{tagCounts.map.get(t) || 0}</span>
           </button>
         ))}
       </div>
@@ -225,6 +390,19 @@ export default function SkillView() {
                 {s.description || "（无描述）"}
               </div>
 
+              {s.note && editingNote !== s.name && (
+                <div
+                  className="skill-note-text"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startEditNote(s);
+                  }}
+                  title="点击编辑备注"
+                >
+                  📝 {s.note}
+                </div>
+              )}
+
               <div className="skill-tags" onClick={(e) => e.stopPropagation()}>
                 {s.tags.map((t) => (
                   <span key={t} className="skill-tag">
@@ -239,10 +417,23 @@ export default function SkillView() {
                 </button>
                 <button
                   className="skill-tag-edit"
+                  onClick={() => startEditNote(s)}
+                >
+                  📝 备注
+                </button>
+                <button
+                  className="skill-tag-edit"
                   onClick={() => openDir(s.name)}
                   title="在资源管理器中打开此 skill 目录"
                 >
                   📂 打开目录
+                </button>
+                <button
+                  className="skill-tag-edit danger"
+                  onClick={() => deleteSkill(s)}
+                  title="删除此技能（移入回收站）"
+                >
+                  🗑 删除
                 </button>
               </div>
 
@@ -270,6 +461,36 @@ export default function SkillView() {
                   <button
                     className="mem-toolbar-btn"
                     onClick={() => setEditingTags(null)}
+                  >
+                    取消
+                  </button>
+                </div>
+              )}
+
+              {editingNote === s.name && (
+                <div
+                  className="skill-tag-editor"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <input
+                    className="skill-search"
+                    placeholder="给这个技能写点备注，方便以后查找…"
+                    value={noteInput}
+                    autoFocus
+                    onChange={(e) => setNoteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveNote(s.name);
+                    }}
+                  />
+                  <button
+                    className="mem-toolbar-btn active"
+                    onClick={() => saveNote(s.name)}
+                  >
+                    保存
+                  </button>
+                  <button
+                    className="mem-toolbar-btn"
+                    onClick={() => setEditingNote(null)}
                   >
                     取消
                   </button>

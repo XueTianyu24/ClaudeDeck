@@ -855,6 +855,8 @@ struct SkillInfo {
     created: i64,
     /// 用户打的标签（来自独立标签文件）
     tags: Vec<String>,
+    /// 用户备注（来自独立备注文件，方便查找）
+    note: Option<String>,
 }
 
 fn skills_dir() -> Option<PathBuf> {
@@ -867,6 +869,18 @@ fn skill_tags_path() -> Result<PathBuf, String> {
 
 fn read_all_skill_tags() -> HashMap<String, Vec<String>> {
     skill_tags_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn skill_notes_path() -> Result<PathBuf, String> {
+    Ok(claude_dir()?.join(".claudedeck-skill-notes.json"))
+}
+
+fn read_all_skill_notes() -> HashMap<String, String> {
+    skill_notes_path()
         .ok()
         .and_then(|p| fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -919,6 +933,7 @@ fn skill_file_stats(dir: &Path) -> (usize, bool) {
 fn list_skills() -> Result<Vec<SkillInfo>, String> {
     let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
     let tags = read_all_skill_tags();
+    let notes = read_all_skill_notes();
     let mut out = Vec::new();
     if !dir.exists() {
         return Ok(out);
@@ -943,6 +958,7 @@ fn list_skills() -> Result<Vec<SkillInfo>, String> {
         let (title, description) = parse_skill_meta(&content);
         let (file_count, has_references) = skill_file_stats(&path);
         let t = tags.get(&name).cloned().unwrap_or_default();
+        let note = notes.get(&name).cloned().filter(|s| !s.is_empty());
         out.push(SkillInfo {
             name,
             title,
@@ -953,6 +969,7 @@ fn list_skills() -> Result<Vec<SkillInfo>, String> {
             mtime: file_mtime_ms(&skill_md),
             created: file_ctime_ms(&path),
             tags: t,
+            note,
         });
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -1084,6 +1101,179 @@ fn set_skill_tags(name: String, tags: Vec<String>) -> Result<(), String> {
     let p = skill_tags_path()?;
     let json = serde_json::to_string_pretty(&all).map_err(|e| format!("序列化失败: {e}"))?;
     fs::write(&p, json).map_err(|e| format!("写标签文件失败: {e}"))?;
+    Ok(())
+}
+
+/// 设置某 skill 的备注（空串 = 清除该 skill 备注记录）。
+#[tauri::command]
+fn set_skill_note(name: String, note: String) -> Result<(), String> {
+    safe_skill_name(&name)?;
+    let mut all = read_all_skill_notes();
+    let note = note.trim().to_string();
+    if note.is_empty() {
+        all.remove(&name);
+    } else {
+        all.insert(name, note);
+    }
+    let p = skill_notes_path()?;
+    let json = serde_json::to_string_pretty(&all).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&p, json).map_err(|e| format!("写备注文件失败: {e}"))?;
+    Ok(())
+}
+
+// ── Skill 回收站：~/.claude/.claudedeck-trash/skills/ ──────────────
+//   <id>/       被删 skill 目录整体（fs::rename 迁入，同卷快速）
+//   <id>.json   元数据（含 tags / note 快照，供还原时恢复）
+
+fn skill_trash_dir() -> Result<PathBuf, String> {
+    Ok(trash_dir()?.join("skills"))
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SkillTrashMeta {
+    id: String,
+    name: String,
+    title: Option<String>,
+    description: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+    deleted_at: i64,
+}
+
+/// 删除一个 skill → 整个目录移入回收站（不物理删除），连同标签/备注快照。
+#[tauri::command]
+fn delete_skill(name: String) -> Result<(), String> {
+    safe_skill_name(&name)?;
+    let src = skills_dir()
+        .ok_or("无法定位 ~/.claude/skills 目录")?
+        .join(&name);
+    if !src.exists() {
+        return Err("skill 不存在".into());
+    }
+    let trash = skill_trash_dir()?;
+    fs::create_dir_all(&trash).map_err(|e| format!("创建回收站失败: {e}"))?;
+    let now = now_ms();
+    let id = format!("{now}-{name}");
+    let dest = trash.join(&id);
+    // 解析标题/描述用于回收站展示
+    let content = fs::read_to_string(src.join("SKILL.md")).unwrap_or_default();
+    let (title, description) = parse_skill_meta(&content);
+    let tags = read_all_skill_tags().get(&name).cloned().unwrap_or_default();
+    let note = read_all_skill_notes().get(&name).cloned();
+    // 整目录迁入回收站（同卷 rename；跨卷失败则回退复制）
+    if fs::rename(&src, &dest).is_err() {
+        copy_dir_all(&src, &dest).map_err(|e| format!("移入回收站失败: {e}"))?;
+        fs::remove_dir_all(&src).map_err(|e| format!("删除原目录失败: {e}"))?;
+    }
+    let meta = SkillTrashMeta {
+        id: id.clone(),
+        name: name.clone(),
+        title,
+        description,
+        tags,
+        note,
+        deleted_at: now,
+    };
+    let meta_json = serde_json::to_string_pretty(&meta).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(trash.join(format!("{id}.json")), meta_json)
+        .map_err(|e| format!("写元数据失败: {e}"))?;
+    // 清掉 live 的标签/备注记录（快照已存 meta，还原时恢复）
+    let _ = set_skill_tags(name.clone(), vec![]);
+    let _ = set_skill_note(name, String::new());
+    Ok(())
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)?.flatten() {
+        let p = entry.path();
+        let target = dst.join(entry.file_name());
+        if p.is_dir() {
+            copy_dir_all(&p, &target)?;
+        } else {
+            fs::copy(&p, &target)?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_skill_trash() -> Result<Vec<SkillTrashMeta>, String> {
+    let trash = skill_trash_dir()?;
+    let mut out = Vec::new();
+    if !trash.exists() {
+        return Ok(out);
+    }
+    for entry in fs::read_dir(&trash)
+        .map_err(|e| format!("读回收站失败: {e}"))?
+        .flatten()
+    {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(s) = fs::read_to_string(&p) {
+            if let Ok(meta) = serde_json::from_str::<SkillTrashMeta>(&s) {
+                out.push(meta);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    Ok(out)
+}
+
+/// 还原一个 skill → 移回 ~/.claude/skills/<name>，并恢复标签/备注。
+#[tauri::command]
+fn restore_skill_trash(id: String) -> Result<(), String> {
+    safe_id(&id)?;
+    let trash = skill_trash_dir()?;
+    let meta_path = trash.join(format!("{id}.json"));
+    let dir_path = trash.join(&id);
+    let meta: SkillTrashMeta = serde_json::from_str(
+        &fs::read_to_string(&meta_path).map_err(|e| format!("读元数据失败: {e}"))?,
+    )
+    .map_err(|e| format!("解析元数据失败: {e}"))?;
+    let dest = skills_dir()
+        .ok_or("无法定位 ~/.claude/skills 目录")?
+        .join(&meta.name);
+    if dest.exists() {
+        return Err("已存在同名 skill，无法还原".into());
+    }
+    if fs::rename(&dir_path, &dest).is_err() {
+        copy_dir_all(&dir_path, &dest).map_err(|e| format!("还原失败: {e}"))?;
+        let _ = fs::remove_dir_all(&dir_path);
+    }
+    let _ = fs::remove_file(&meta_path);
+    if !meta.tags.is_empty() {
+        let _ = set_skill_tags(meta.name.clone(), meta.tags);
+    }
+    if let Some(note) = meta.note {
+        if !note.is_empty() {
+            let _ = set_skill_note(meta.name, note);
+        }
+    }
+    Ok(())
+}
+
+/// 彻底删除：`id` 为 None → 清空整个 skill 回收站；否则删单项。
+#[tauri::command]
+fn purge_skill_trash(id: Option<String>) -> Result<(), String> {
+    let trash = skill_trash_dir()?;
+    if !trash.exists() {
+        return Ok(());
+    }
+    match id {
+        Some(id) => {
+            safe_id(&id)?;
+            let _ = fs::remove_dir_all(trash.join(&id));
+            let _ = fs::remove_file(trash.join(format!("{id}.json")));
+        }
+        None => {
+            fs::remove_dir_all(&trash).map_err(|e| format!("清空失败: {e}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -1837,6 +2027,11 @@ pub fn run() {
             list_skill_files,
             open_skill_dir,
             set_skill_tags,
+            set_skill_note,
+            delete_skill,
+            list_skill_trash,
+            restore_skill_trash,
+            purge_skill_trash,
             launcher_get_config,
             launcher_add_dir,
             launcher_remove_dir,

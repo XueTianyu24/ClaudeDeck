@@ -782,6 +782,22 @@ tr.muted {
   border-color: var(--green);
   color: var(--green);
 }
+.skill-chip-count {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 15px;
+  text-align: center;
+}
+.skill-chip.active .skill-chip-count {
+  background: var(--green);
+  color: var(--bg, #0b0f17);
+}
 
 .skill-grid {
   display: grid;
@@ -883,6 +899,23 @@ tr.muted {
 .skill-tag-edit:hover {
   color: var(--text);
   border-color: var(--dim);
+}
+.skill-tag-edit.danger:hover {
+  color: var(--red, #e5534b);
+  border-color: var(--red, #e5534b);
+}
+
+.skill-note-text {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: pointer;
 }
 
 .skill-tag-editor {
