@@ -5,6 +5,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布] - macOS 跨平台适配
+
+### 新增
+- **macOS 支持**：核心数据源（`~/.claude/`）与会话监控 / 记忆 / 技能 / 用量 / 通知本就跨平台；本次补齐 Windows 专属部分的 macOS 实现——
+  - 启动器在 macOS 用 **Terminal.app**（osascript `do script`）新窗口 `cd` 到目录后起 claude。
+  - 手机推送 hook 在 macOS 改用 **bash 脚本**（curl + perl，无 jq 依赖），与 Windows 的 PowerShell 版等价。
+  - `curl` 可执行名、启动器默认前置命令、文案等按平台分支。
+- 新增 `docs/macos-build.md` 构建指南。
+
+### 说明
+- macOS 版需在 Mac 本机编译（`npm run tauri build` 产出 `.app` / `.dmg`），Tauri 不支持从 Windows 交叉打包。此版 macOS 代码尚未在 Mac 实测，待验证后正式发版。
+
 ## [0.8.2] - 2026-06-11
 
 ### 新增

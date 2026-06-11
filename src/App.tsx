@@ -472,8 +472,8 @@ function App() {
                   </p>
                   {env && !env.curl_available && (
                     <p className="phone-msg">
-                      ⚠️ 未检测到 curl.exe，手机推送将无法工作（Win10 1803
-                      以下需手动安装 curl）
+                      ⚠️ 未检测到 curl，手机推送将无法工作（Win10 1803
+                      以下需手动安装 curl；macOS / Linux 一般自带）
                     </p>
                   )}
 

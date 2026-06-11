@@ -424,7 +424,7 @@ export default function SkillView() {
                 <button
                   className="skill-tag-edit"
                   onClick={() => openDir(s.name)}
-                  title="在资源管理器中打开此 skill 目录"
+                  title="在文件管理器中打开此 skill 目录"
                 >
                   📂 打开目录
                 </button>

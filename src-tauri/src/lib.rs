@@ -244,9 +244,15 @@ struct EnvStatus {
     curl_available: bool,
 }
 
-/// 检测 `curl.exe` 是否在 PATH 中可用（手机推送依赖）。
+/// curl 可执行名：Windows 用 `curl.exe`，macOS / Linux 自带 `curl`。
+#[cfg(windows)]
+const CURL_BIN: &str = "curl.exe";
+#[cfg(not(windows))]
+const CURL_BIN: &str = "curl";
+
+/// 检测 curl 是否在 PATH 中可用（手机推送依赖；macOS / Linux 一般自带）。
 fn curl_available() -> bool {
-    Command::new("curl.exe")
+    Command::new(CURL_BIN)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -1281,7 +1287,11 @@ fn purge_skill_trash(id: Option<String>) -> Result<(), String> {
 // 存 %APPDATA%\ClaudeDeck\launcher.json，与任何外部工具无耦合
 // （开源用户不一定装其他启动器，故不共享配置）。
 
+// 默认前置命令按 shell 给：Windows = PowerShell，macOS/Linux = bash export。
+#[cfg(windows)]
 const LAUNCHER_DEFAULT_PRE_CMD: &str = "$env:HTTP_PROXY = \"http://127.0.0.1:7897\"\r\n$env:HTTPS_PROXY = \"http://127.0.0.1:7897\"\r\n$env:ALL_PROXY = \"http://127.0.0.1:7897\"";
+#[cfg(not(windows))]
+const LAUNCHER_DEFAULT_PRE_CMD: &str = "export HTTP_PROXY=http://127.0.0.1:7897\nexport HTTPS_PROXY=http://127.0.0.1:7897\nexport ALL_PROXY=http://127.0.0.1:7897";
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -1379,9 +1389,51 @@ fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), S
     r.map(|_| ()).map_err(|e| format!("启动 Claude 失败: {e}"))
 }
 
+/// POSIX shell 单引号安全包裹（把 dir / 命令安全嵌进 shell 字符串）。
 #[cfg(not(windows))]
-fn spawn_claude(dir: &str, _pre_cmd_enabled: bool, _pre_cmd: &str) -> Result<(), String> {
-    // mac/linux 终端拉起留待平台适配；先直接 spawn claude。
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
+    // 用 Terminal.app 开新窗口：cd 到目录后（可选前置命令）跑 claude。
+    let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+        format!("cd {} && {} ; claude", sh_quote(dir), pre_cmd.trim())
+    } else {
+        format!("cd {} && claude", sh_quote(dir))
+    };
+    // 嵌进 AppleScript 字符串：转义反斜杠与双引号。
+    let escaped = inner.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(r#"tell application "Terminal" to do script "{escaped}""#);
+    Command::new("osascript")
+        .args(["-e", &script])
+        .spawn()
+        .map_err(|e| format!("启动 Claude 失败: {e}"))?;
+    // 把 Terminal 带到前台。
+    let _ = Command::new("osascript")
+        .args(["-e", r#"tell application "Terminal" to activate"#])
+        .spawn();
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
+    // Linux：尽力用常见终端模拟器开窗跑 claude，失败再退回无窗口直接 spawn。
+    let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+        format!("cd {} && {} ; claude; exec bash", sh_quote(dir), pre_cmd.trim())
+    } else {
+        format!("cd {} && claude; exec bash", sh_quote(dir))
+    };
+    for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
+        if Command::new(term)
+            .args(["-e", "bash", "-c", &inner])
+            .spawn()
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
     Command::new("claude")
         .current_dir(dir)
         .spawn()
@@ -1459,11 +1511,13 @@ fn set_notify_config(cfg: NotifyConfig, state: tauri::State<Arc<Mutex<NotifyConf
 /// 标记字符串：用于在 settings.json 里识别「我们装的」hook，做幂等增删。
 const HOOK_MARKER: &str = "claudedeck-bark-notify";
 
-/// hook 脚本模板。`__BARK_KEY__` / `__PUSHPLUS_TOKEN__` / `__THRESHOLD_MS__` 安装时替换。
+/// hook 脚本模板（Windows = PowerShell .ps1，macOS/Linux = bash .sh）。
+/// `__BARK_KEY__` / `__PUSHPLUS_TOKEN__` / `__*_ENABLED__` / `__THRESHOLD_MS__` 安装时替换。
 /// 写盘时前置 UTF-8 BOM，否则 Windows PowerShell 5.1 按 GBK 读中文会乱码。
 /// 两渠道可同时启用：bark(iPhone 免费) + pushplus(微信，需实名)，各自有 key 就推。
 /// 中文编码坑：PowerShell 调 curl.exe 直传中文参数会乱码 →
 /// 用 [uri]::EscapeDataString 在 PS 里先 URL 编码、只把 ASCII 传给 curl。
+#[cfg(windows)]
 const PHONE_HOOK_SCRIPT: &str = r##"# ClaudeDeck — Claude Code hook → 手机推送(bark / pushplus)
 # 本文件由 ClaudeDeck 自动生成与管理，请勿手改（在应用里改渠道 / key / 阈值即可）。
 $ErrorActionPreference = 'SilentlyContinue'
@@ -1529,6 +1583,63 @@ if ($pushplusToken -and $pushplusEnabled) {
 exit 0
 "##;
 
+/// macOS / Linux 版 hook 脚本（bash）。仅用系统自带 curl + perl（macOS 预装）。
+/// JSON 字段提取与 URL 编码都走 perl，避免依赖 jq。变量行格式固定，供状态回填解析。
+#[cfg(not(windows))]
+const PHONE_HOOK_SCRIPT: &str = r###"#!/bin/bash
+# ClaudeDeck — Claude Code hook → 手机推送(bark / pushplus)
+# 本文件由 ClaudeDeck 自动生成与管理，请勿手改（在应用里改渠道 / key / 阈值即可）。
+raw=$(cat)
+get() { FIELD="$1" perl -0777 -ne 'print $1 if /"$ENV{FIELD}"\s*:\s*"((?:[^"\\]|\\.)*)"/' <<<"$raw"; }
+cwd=$(get cwd)
+ev=$(get hook_event_name)
+sid=$(get session_id)
+[ -z "$sid" ] && sid=unknown
+if [ -n "$cwd" ]; then proj=$(basename "$cwd"); else proj="会话"; fi
+stateDir="$HOME/.claude/hooks/.state"
+stateFile="$stateDir/$sid"
+barkKey='__BARK_KEY__'
+barkEnabled=__BARK_ENABLED__
+pushplusToken='__PUSHPLUS_TOKEN__'
+pushplusEnabled=__PUSHPLUS_ENABLED__
+THRESHOLD_MS=__THRESHOLD_MS__
+now_ms() { perl -MTime::HiRes=time -e 'printf "%d", time()*1000'; }
+if [ "$ev" = "UserPromptSubmit" ]; then
+    mkdir -p "$stateDir"
+    now_ms > "$stateFile"
+    exit 0
+fi
+if [ "$ev" = "Stop" ]; then
+    start=""
+    if [ -f "$stateFile" ]; then start=$(cat "$stateFile" 2>/dev/null); rm -f "$stateFile"; fi
+    now=$(now_ms)
+    if [ -n "$start" ]; then dur=$((now - start)); else dur=0; fi
+    if [ "$dur" -lt "$THRESHOLD_MS" ]; then exit 0; fi
+    sec=$((dur / 1000))
+    if [ "$sec" -lt 60 ]; then durTxt="${sec}s"; else durTxt="$((sec / 60))m$((sec % 60))s"; fi
+    title="✅ $proj · 任务完成"
+    body="用时 $durTxt"
+    sound="birdsong"
+elif [ "$ev" = "Notification" ]; then
+    msg=$(get message)
+    title="⏳ $proj · 需要你处理"
+    if [ -n "$msg" ]; then body="$msg"; elif [ -n "$cwd" ]; then body="$cwd"; else body="等待你的操作"; fi
+    sound="alarm"
+else
+    exit 0
+fi
+enc() { perl -e 'my $s=$ARGV[0]; $s=~s/([^A-Za-z0-9_.~-])/sprintf("%%%02X",ord($1))/ge; print $s;' "$1"; }
+if [ -n "$barkKey" ] && [ "$barkEnabled" = "true" ]; then
+    data="title=$(enc "$title")&body=$(enc "$body")&group=ClaudeDeck&sound=$sound"
+    curl -s -X POST "https://api.day.app/$barkKey" --data "$data" >/dev/null
+fi
+if [ -n "$pushplusToken" ] && [ "$pushplusEnabled" = "true" ]; then
+    data="token=$pushplusToken&title=$(enc "$title")&content=$(enc "$body")"
+    curl -s -X POST "https://www.pushplus.plus/send" --data "$data" >/dev/null
+fi
+exit 0
+"###;
+
 /// 手机 hook 当前状态，回传前端用于回填表单 + 显示开关。
 #[derive(Debug, Serialize)]
 struct PhoneHookStatus {
@@ -1553,14 +1664,23 @@ fn claude_dir() -> Result<PathBuf, String> {
 }
 
 fn phone_script_path() -> Result<PathBuf, String> {
-    Ok(claude_dir()?
-        .join("hooks")
-        .join("claudedeck-bark-notify.ps1"))
+    let name = if cfg!(windows) {
+        "claudedeck-bark-notify.ps1"
+    } else {
+        "claudedeck-bark-notify.sh"
+    };
+    Ok(claude_dir()?.join("hooks").join(name))
 }
 
+#[cfg(windows)]
 fn hook_command(script: &Path) -> String {
     let p = script.to_string_lossy().replace('\\', "/");
     format!("powershell.exe -NoProfile -ExecutionPolicy Bypass -File {p}")
+}
+
+#[cfg(not(windows))]
+fn hook_command(script: &Path) -> String {
+    format!("bash \"{}\"", script.to_string_lossy())
 }
 
 fn group_is_ours(group: &Value) -> bool {
@@ -1612,17 +1732,31 @@ fn write_phone_script(
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| format!("创建 hooks 目录失败: {e}"))?;
     }
-    let ps_bool = |b: bool| if b { "$true" } else { "$false" };
+    // 布尔字面量：PowerShell 用 $true/$false，bash 用 true/false。
+    #[cfg(windows)]
+    let bool_lit = |b: bool| if b { "$true" } else { "$false" };
+    #[cfg(not(windows))]
+    let bool_lit = |b: bool| if b { "true" } else { "false" };
     let content = PHONE_HOOK_SCRIPT
         .replace("__BARK_KEY__", bark_key)
-        .replace("__BARK_ENABLED__", ps_bool(bark_enabled))
+        .replace("__BARK_ENABLED__", bool_lit(bark_enabled))
         .replace("__PUSHPLUS_TOKEN__", pushplus_token)
-        .replace("__PUSHPLUS_ENABLED__", ps_bool(pushplus_enabled))
+        .replace("__PUSHPLUS_ENABLED__", bool_lit(pushplus_enabled))
         .replace("__THRESHOLD_MS__", &threshold_ms.to_string());
-    // 前置 UTF-8 BOM
-    let mut bytes = vec![0xEF, 0xBB, 0xBF];
-    bytes.extend_from_slice(content.as_bytes());
-    fs::write(&path, bytes).map_err(|e| format!("写脚本失败: {e}"))?;
+    // Windows：前置 UTF-8 BOM（PS 5.1 按 GBK 读中文会乱码）。
+    #[cfg(windows)]
+    {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(content.as_bytes());
+        fs::write(&path, bytes).map_err(|e| format!("写脚本失败: {e}"))?;
+    }
+    // macOS / Linux：UTF-8 无 BOM，并加可执行位。
+    #[cfg(not(windows))]
+    {
+        fs::write(&path, content.as_bytes()).map_err(|e| format!("写脚本失败: {e}"))?;
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o755));
+    }
     Ok(path)
 }
 
@@ -1665,19 +1799,37 @@ fn phone_hook_status() -> PhoneHookStatus {
     // 老脚本没有 enabled 标志：key 已填则默认视为启用（向后兼容）
     let mut bark_enabled = true;
     let mut pushplus_enabled = true;
+    // 变量行写法因平台而异：PS `$barkKey = '...'`，bash `barkKey='...'`。
+    #[cfg(windows)]
+    let (mk_bark, mk_pp, mk_thr, mk_be, mk_pe, true_lit) = (
+        "$barkKey = '",
+        "$pushplusToken = '",
+        "$THRESHOLD_MS = ",
+        "$barkEnabled = ",
+        "$pushplusEnabled = ",
+        "$true",
+    );
+    #[cfg(not(windows))]
+    let (mk_bark, mk_pp, mk_thr, mk_be, mk_pe, true_lit) = (
+        "barkKey='",
+        "pushplusToken='",
+        "THRESHOLD_MS=",
+        "barkEnabled=",
+        "pushplusEnabled=",
+        "true",
+    );
     if script_exists {
         if let Ok(content) = fs::read_to_string(&script) {
-            bark_key = extract_between(&content, "$barkKey = '", "'").filter(|k| !k.is_empty());
-            pushplus_token =
-                extract_between(&content, "$pushplusToken = '", "'").filter(|k| !k.is_empty());
-            threshold_sec = extract_between(&content, "$THRESHOLD_MS = ", "\n")
+            bark_key = extract_between(&content, mk_bark, "'").filter(|k| !k.is_empty());
+            pushplus_token = extract_between(&content, mk_pp, "'").filter(|k| !k.is_empty());
+            threshold_sec = extract_between(&content, mk_thr, "\n")
                 .and_then(|s| s.trim().parse::<i64>().ok())
                 .map(|ms| ms / 1000);
-            if let Some(v) = extract_between(&content, "$barkEnabled = ", "\n") {
-                bark_enabled = v.trim().eq_ignore_ascii_case("$true");
+            if let Some(v) = extract_between(&content, mk_be, "\n") {
+                bark_enabled = v.trim().eq_ignore_ascii_case(true_lit);
             }
-            if let Some(v) = extract_between(&content, "$pushplusEnabled = ", "\n") {
-                pushplus_enabled = v.trim().eq_ignore_ascii_case("$true");
+            if let Some(v) = extract_between(&content, mk_pe, "\n") {
+                pushplus_enabled = v.trim().eq_ignore_ascii_case(true_lit);
             }
         }
     }
@@ -1830,7 +1982,7 @@ fn test_phone_push(channel: String, key: String) -> Result<(), String> {
         ],
     };
 
-    let out = Command::new("curl.exe")
+    let out = Command::new(CURL_BIN)
         .args(&args)
         .output()
         .map_err(|e| format!("调用 curl 失败: {e}"))?;

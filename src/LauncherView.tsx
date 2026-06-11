@@ -197,7 +197,7 @@ export default function LauncherView() {
               savePrecmd({ pre_cmd_enabled: e.target.checked })
             }
           />
-          启动前运行 PowerShell 命令（如注入代理环境变量，仅作用于该终端）
+          启动前运行命令（如注入代理环境变量，仅作用于该终端）
         </label>
         <div className="lc-precmd-row">
           <textarea
@@ -217,8 +217,9 @@ export default function LauncherView() {
           </button>
         </div>
         <p className="lc-hint">
-          勾选时用 <code>powershell -NoExit</code> 先跑命令再起 claude；不勾用{" "}
-          <code>cmd /k claude</code>。
+          Windows：勾选用 <code>powershell -NoExit</code> 先跑命令再起 claude，不勾用{" "}
+          <code>cmd /k claude</code>；macOS：用 Terminal.app 新窗口 <code>cd</code>{" "}
+          到目录后起 claude。
         </p>
       </div>
     </div>
