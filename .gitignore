@@ -15,6 +15,10 @@ dist-ssr
 # Project scratch
 .tmp/
 
+# CI 构建产物 / 本地暂存的发版资产（不进仓库，走 Release）
+/*.zip
+/*.dmg
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
