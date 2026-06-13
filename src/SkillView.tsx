@@ -57,7 +57,7 @@ export default function SkillView() {
   const [err, setErr] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterTag, setFilterTag] = useState<string | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey>("name");
+  const [sortKey, setSortKey] = useState<SortKey>("created_desc");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [docMap, setDocMap] = useState<Record<string, DocView>>({});
   const [treeMap, setTreeMap] = useState<Record<string, SkillFile[]>>({});
@@ -67,6 +67,13 @@ export default function SkillView() {
   const [noteInput, setNoteInput] = useState("");
   const [trashMode, setTrashMode] = useState(false);
   const [trash, setTrash] = useState<SkillTrashMeta[]>([]);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"grid" | "list">(
+    () => (localStorage.getItem("cd-skill-view") as "grid" | "list") || "grid"
+  );
+  useEffect(() => {
+    localStorage.setItem("cd-skill-view", viewMode);
+  }, [viewMode]);
 
   async function reload() {
     try {
@@ -170,6 +177,28 @@ export default function SkillView() {
     } catch (e) {
       setErr(String(e));
     }
+  }
+
+  // 一键复制技能名（webview 优先 Clipboard API，失败退回 execCommand）
+  async function copyName(name: string) {
+    try {
+      await navigator.clipboard.writeText(name);
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = name;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        /* ignore */
+      }
+    }
+    setCopied(name);
+    window.setTimeout(() => setCopied((c) => (c === name ? null : c)), 1500);
   }
 
   async function saveTags(name: string) {
@@ -329,10 +358,26 @@ export default function SkillView() {
           onChange={(e) => setSortKey(e.target.value as SortKey)}
           title="排序方式"
         >
-          <option value="name">名称 A→Z</option>
           <option value="created_desc">添加日期（新→旧）</option>
           <option value="created_asc">添加日期（旧→新）</option>
+          <option value="name">名称 A→Z</option>
         </select>
+        <div className="skill-viewtoggle">
+          <button
+            className={viewMode === "grid" ? "active" : ""}
+            onClick={() => setViewMode("grid")}
+            title="网格视图"
+          >
+            ▦
+          </button>
+          <button
+            className={viewMode === "list" ? "active" : ""}
+            onClick={() => setViewMode("list")}
+            title="列表视图（技能多时更紧凑）"
+          >
+            ☰
+          </button>
+        </div>
         <span className="mem-toolbar-hint">
           {filtered.length} / {skills.length} 个技能
         </span>
@@ -366,7 +411,7 @@ export default function SkillView() {
         ))}
       </div>
 
-      <div className="skill-grid">
+      <div className={viewMode === "list" ? "skill-list" : "skill-grid"}>
         {filtered.map((s) => {
           const open = expanded.has(s.name);
           return (
@@ -383,7 +428,14 @@ export default function SkillView() {
                       📁 references
                     </span>
                   )}
-                  <span className="skill-mtime">{fmtAgo(s.mtime)}</span>
+                  <span
+                    className="skill-mtime"
+                    title={`添加于 ${fmtAgo(s.created)}　最近修改 ${fmtAgo(
+                      s.mtime
+                    )}`}
+                  >
+                    {fmtAgo(s.created)}添加
+                  </span>
                 </div>
               </div>
               <div className={`skill-desc ${open ? "full" : ""}`}>
@@ -409,6 +461,13 @@ export default function SkillView() {
                     {t}
                   </span>
                 ))}
+                <button
+                  className="skill-tag-edit"
+                  onClick={() => copyName(s.name)}
+                  title={`复制技能名：${s.name}`}
+                >
+                  {copied === s.name ? "✓ 已复制" : "📋 复制名"}
+                </button>
                 <button
                   className="skill-tag-edit"
                   onClick={() => startEditTags(s)}

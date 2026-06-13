@@ -2029,3 +2029,54 @@ tr.muted {
   justify-content: center;
   padding: 4px 0 8px;
 }
+
+/* ── 技能：网格/列表视图切换 ── */
+.skill-viewtoggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  flex: none;
+}
+.skill-viewtoggle button {
+  border: none;
+  background: var(--panel);
+  color: var(--dim);
+  padding: 5px 11px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.skill-viewtoggle button + button {
+  border-left: 1px solid var(--border);
+}
+.skill-viewtoggle button.active {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* 列表视图：单列紧凑。未展开时只露名称/描述(单行)/标签/时间，展开后与卡片一致 */
+.skill-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  align-content: start;
+}
+.skill-list .skill-card {
+  padding: 10px 14px;
+}
+.skill-list .skill-card:not(.open) .skill-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 2px 0 0;
+}
+.skill-list .skill-card:not(.open) .skill-note-text,
+.skill-list .skill-card:not(.open) .skill-tag-edit {
+  display: none;
+}
+.skill-list .skill-card:not(.open) .skill-tags {
+  margin-top: 4px;
+}
