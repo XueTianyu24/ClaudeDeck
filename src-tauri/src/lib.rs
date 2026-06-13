@@ -1722,6 +1722,9 @@ struct LauncherConfig {
     recent_dirs: Vec<RecentDir>,
     pre_cmd_enabled: bool,
     pre_cmd: String,
+    /// 用 Windows Terminal 在「当前窗口开新 tab」启动（多会话集中成 tab，免手动切窗口）。
+    /// 默认开；WT 不可用时自动退回独立窗口。仅 Windows 生效。
+    use_wt: bool,
 }
 
 impl Default for LauncherConfig {
@@ -1730,6 +1733,7 @@ impl Default for LauncherConfig {
             recent_dirs: vec![],
             pre_cmd_enabled: false,
             pre_cmd: LAUNCHER_DEFAULT_PRE_CMD.to_string(),
+            use_wt: true,
         }
     }
 }
@@ -1781,13 +1785,102 @@ fn launcher_touch_and_sort(cfg: &mut LauncherConfig, path: &str) {
         .sort_by(|a, b| b.last_opened_at.cmp(&a.last_opened_at));
 }
 
+/// 标准 Base64 编码（PowerShell -EncodedCommand 用；手写避免引入依赖）。
 #[cfg(windows)]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
-    // 我们要的就是弹出一个终端窗口跑 claude，所以不加 CREATE_NO_WINDOW。
+fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(T[(b0 >> 2) as usize] as char);
+        out.push(T[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(b2 & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// 把一段 PowerShell 脚本编码成 `-EncodedCommand` 参数（UTF-16LE + Base64）。
+/// 用 EncodedCommand 是为绕过 Windows Terminal 把 `;` 当命令分隔符的解析坑
+/// （代理 pre_cmd 通常含 `;`）。
+#[cfg(windows)]
+fn ps_encoded(script: &str) -> String {
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    base64_encode(&utf16)
+}
+
+/// wt.exe（Windows Terminal）是否可用。静默 `where wt`，不弹窗。
+#[cfg(windows)]
+fn wt_available() -> bool {
+    silent_command("where")
+        .arg("wt")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// ClaudeDeck 专属的 Windows Terminal 具名窗口。所有从启动器开的会话都集中进这个
+/// 窗口（`-w <name>`：不存在则新建、已存在则在其中开新 tab），与用户其他 WT 窗口隔离。
+/// 用具名窗口而非 `-w 0`(最近使用的窗口) 是为避免「多个 WT 窗口时甩进哪个不可控」。
+#[cfg(windows)]
+const WT_WINDOW_NAME: &str = "ClaudeDeck";
+
+#[cfg(windows)]
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, use_wt: bool) -> Result<(), String> {
+    // 脚本：可选 pre_cmd（如注入代理）后起 claude。
+    let script = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+        format!("{}\nclaude", pre_cmd.trim())
+    } else {
+        "claude".to_string()
+    };
+
+    // WT 多 tab 工作区模式：在「ClaudeDeck 专属具名窗口」(`-w ClaudeDeck`) 甩一个新 tab，
+    // 自动切到项目目录(`-d`) + 注入代理 + 起 claude。所有会话集中进这一个窗口、和用户
+    // 其他 WT 窗口隔离，免手动在终端窗口间切换。
+    if use_wt && wt_available() {
+        let title = Path::new(dir)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("claude");
+        let b64 = ps_encoded(&script);
+        // wt 是 GUI，CREATE_NO_WINDOW 防任何控制台黑窗；tab 在 WT 窗口里正常显示。
+        let ok = silent_command("wt")
+            .args([
+                "-w",
+                WT_WINDOW_NAME,
+                "new-tab",
+                "-d",
+                dir,
+                "--title",
+                title,
+                "powershell",
+                "-NoProfile",
+                "-NoExit",
+                "-EncodedCommand",
+                &b64,
+            ])
+            .spawn()
+            .is_ok();
+        if ok {
+            return Ok(());
+        }
+        // wt 调用失败 → 落到下面独立窗口兜底。
+    }
+
+    // 独立窗口模式（WT 不可用 / 用户关闭 / 调用失败兜底）。要弹终端窗口，不加 CREATE_NO_WINDOW。
     let r = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-        let full = format!("{}\nclaude", pre_cmd.trim());
         Command::new("powershell")
-            .args(["-NoExit", "-Command", &full])
+            .args(["-NoExit", "-Command", &script])
             .current_dir(dir)
             .spawn()
     } else {
@@ -1806,7 +1899,8 @@ fn sh_quote(s: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) -> Result<(), String> {
+    // use_wt 是 Windows Terminal 专属，macOS 忽略。
     // 用 Terminal.app 开新窗口：cd 到目录后（可选前置命令）跑 claude。
     let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
         format!("cd {} && {} ; claude", sh_quote(dir), pre_cmd.trim())
@@ -1828,8 +1922,9 @@ fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), S
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> Result<(), String> {
-    // Linux：尽力用常见终端模拟器开窗跑 claude，失败再退回无窗口直接 spawn。
+fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) -> Result<(), String> {
+    // use_wt 是 Windows Terminal 专属，Linux 忽略。
+    // 尽力用常见终端模拟器开窗跑 claude，失败再退回无窗口直接 spawn。
     let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
         format!("cd {} && {} ; claude; exec bash", sh_quote(dir), pre_cmd.trim())
     } else {
@@ -1884,6 +1979,14 @@ fn launcher_save_precmd(enabled: bool, pre_cmd: String) -> Result<(), String> {
     save_launcher_config(&cfg)
 }
 
+/// 切换「用 Windows Terminal 开新 tab」模式（多会话集中成 tab，免手动切窗口）。
+#[tauri::command]
+fn launcher_set_use_wt(enabled: bool) -> Result<(), String> {
+    let mut cfg = load_launcher_config();
+    cfg.use_wt = enabled;
+    save_launcher_config(&cfg)
+}
+
 #[tauri::command]
 fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
     let p = path.trim().to_string();
@@ -1896,7 +1999,7 @@ fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
     let mut cfg = load_launcher_config();
     launcher_touch_and_sort(&mut cfg, &p);
     save_launcher_config(&cfg)?;
-    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd)?;
+    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd, cfg.use_wt)?;
     Ok(cfg)
 }
 
@@ -2599,6 +2702,7 @@ pub fn run() {
             launcher_add_dir,
             launcher_remove_dir,
             launcher_save_precmd,
+            launcher_set_use_wt,
             launcher_launch,
             set_close_to_tray,
             set_notify_config,

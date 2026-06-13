@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.3] - 2026-06-13
+
+### 新增
+- **启动器：在 Windows Terminal 专属窗口开 tab**：开启后，从启动器 / 最近会话启动的所有 Claude 会话集中进一个专属「ClaudeDeck」WT 窗口的多个 tab（`wt -w ClaudeDeck new-tab`，没有就新建、已有就往里加），每个 tab 自动切到对应项目目录 + 注入启动器「启动前命令」里的代理 + 起 claude，与你其他 WT 窗口隔离——多会话不用再手动在终端窗口间来回切。默认开启；未装 WT / 调用失败时自动退回原来的独立窗口模式。
+  - 代理命令用 PowerShell `-EncodedCommand`(base64) 传入，绕过 Windows Terminal 把命令里的 `;` 当分隔符的解析坑。
+  - 后端 `spawn_claude` 加 WT 分支 + `launcher_set_use_wt` 命令；前端启动器加「在 Windows Terminal 中打开」开关。
+
 ## [0.9.2] - 2026-06-13
 
 ### 新增

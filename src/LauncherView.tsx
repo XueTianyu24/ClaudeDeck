@@ -9,6 +9,7 @@ type LauncherConfig = {
   recent_dirs: RecentDir[];
   pre_cmd_enabled: boolean;
   pre_cmd: string;
+  use_wt: boolean;
 };
 
 const DEFAULT_PRE_CMD =
@@ -113,6 +114,16 @@ export default function LauncherView() {
     }
   }
 
+  async function saveUseWt(enabled: boolean) {
+    if (!cfg) return;
+    setCfg({ ...cfg, use_wt: enabled });
+    try {
+      await invoke("launcher_set_use_wt", { enabled });
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
   if (!cfg) {
     return (
       <div className="launcher">
@@ -192,6 +203,14 @@ export default function LauncherView() {
         <label className="lc-check">
           <input
             type="checkbox"
+            checked={cfg.use_wt}
+            onChange={(e) => saveUseWt(e.target.checked)}
+          />
+          在 Windows Terminal 中打开（所有会话集中到一个专属「ClaudeDeck」窗口的多个 tab，免手动切窗口；未装 WT 自动退回独立窗口）
+        </label>
+        <label className="lc-check">
+          <input
+            type="checkbox"
             checked={cfg.pre_cmd_enabled}
             onChange={(e) =>
               savePrecmd({ pre_cmd_enabled: e.target.checked })
@@ -217,9 +236,11 @@ export default function LauncherView() {
           </button>
         </div>
         <p className="lc-hint">
-          Windows：勾选用 <code>powershell -NoExit</code> 先跑命令再起 claude，不勾用{" "}
-          <code>cmd /k claude</code>；macOS：用 Terminal.app 新窗口 <code>cd</code>{" "}
-          到目录后起 claude。
+          Windows：默认把所有会话开进一个专属「ClaudeDeck」窗口的新 tab
+          （<code>wt -w ClaudeDeck new-tab</code>，没有就建、有就往里加），自动切到项目目录
+          + 注入上面的代理命令 + 起 claude——和你其他 WT 窗口隔离，不用再手动切窗口。
+          关掉则退回独立窗口（<code>powershell -NoExit</code> / <code>cmd /k claude</code>）；
+          macOS：用 Terminal.app 新窗口 <code>cd</code> 到目录后起 claude。
         </p>
       </div>
     </div>
