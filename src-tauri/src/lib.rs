@@ -313,6 +313,117 @@ fn get_env_status() -> EnvStatus {
     }
 }
 
+// ── 检查更新（轻量提示式）────────────────────────────────────────
+//
+// Tier 1 方案：查 GitHub Release 最新版本号，比当前新就让前端弹「打开下载页」提示。
+// 不走 tauri-plugin-updater 原地自动安装（便携版 exe 不支持），便携版 + 安装版 + mac 全覆盖。
+// 复用项目已有的 curl 调用（silent_command，Windows 无黑窗）；GitHub API 默认 UA 即可，
+// 加 --max-time 防启动检查卡住。releases/latest 自动排除 draft / prerelease。
+
+/// 开源仓库的 GitHub API 入口（owner/repo 写死，发版地址固定）。
+const RELEASE_API: &str =
+    "https://api.github.com/repos/XueTianyu24/ClaudeDeck/releases/latest";
+
+#[derive(Debug, Serialize)]
+struct UpdateInfo {
+    /// 当前运行版本（来自 Cargo.toml，编译期注入）
+    current: String,
+    /// GitHub 最新 release 版本（已剥 `v` 前缀）
+    latest: String,
+    /// latest 是否比 current 新
+    has_update: bool,
+    /// release 说明正文（markdown，前端渲染「查看更新内容」用）
+    notes: String,
+    /// release 页面 URL（前端「打开下载页」用）
+    url: String,
+    /// 发布时间（ISO8601）
+    published_at: String,
+}
+
+/// 朴素版本号比较：`a > b` 返回 true。按 `.` 分段比较数字部分，缺位补 0，
+/// 容忍 `1.2.3-beta` 这类后缀（只取每段前导数字）。版本号都是 `x.y.z` 形态，够用。
+fn version_gt(a: &str, b: &str) -> bool {
+    let parse = |s: &str| -> Vec<u64> {
+        s.split('.')
+            .map(|p| {
+                let num: String = p.chars().take_while(|c| c.is_ascii_digit()).collect();
+                num.parse().unwrap_or(0)
+            })
+            .collect()
+    };
+    let va = parse(a);
+    let vb = parse(b);
+    let n = va.len().max(vb.len());
+    for i in 0..n {
+        let x = va.get(i).copied().unwrap_or(0);
+        let y = vb.get(i).copied().unwrap_or(0);
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+#[tauri::command]
+fn check_for_update() -> Result<UpdateInfo, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let out = silent_command(CURL_BIN)
+        .args([
+            "-fsSL",
+            "--max-time",
+            "8",
+            "-H",
+            "Accept: application/vnd.github+json",
+            "-H",
+            "User-Agent: ClaudeDeck",
+            RELEASE_API,
+        ])
+        .output()
+        .map_err(|e| format!("调用 curl 失败: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "检查更新失败（网络或 GitHub 限流）: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("解析 GitHub 响应失败: {e}"))?;
+    let tag = json
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if tag.is_empty() {
+        return Err("GitHub 未返回 tag_name（可能尚无 release）".into());
+    }
+    let latest = tag.trim_start_matches('v').to_string();
+    let notes = json
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let url = json
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("https://github.com/XueTianyu24/ClaudeDeck/releases/latest")
+        .to_string();
+    let published_at = json
+        .get("published_at")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let has_update = version_gt(&latest, &current);
+    Ok(UpdateInfo {
+        current,
+        latest,
+        has_update,
+        notes,
+        url,
+        published_at,
+    })
+}
+
 // ── 会话历史（最近会话浏览 + 内容入口）──────────────────────────
 //
 // 数据源：~/.claude/projects/<编码路径>/<sessionId>.jsonl（持久 transcript）。
@@ -2461,6 +2572,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             get_env_status,
+            check_for_update,
             list_memory_projects,
             list_memories,
             read_global_md,
@@ -2505,6 +2617,25 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_gt_basic() {
+        assert!(version_gt("0.9.2", "0.9.1"));
+        assert!(version_gt("0.10.0", "0.9.9"));
+        assert!(version_gt("1.0.0", "0.9.9"));
+        assert!(!version_gt("0.9.1", "0.9.1")); // 相等不算新
+        assert!(!version_gt("0.9.0", "0.9.1")); // 旧不算新
+    }
+
+    #[test]
+    fn version_gt_edge() {
+        // 缺位补 0：1.0 == 1.0.0
+        assert!(!version_gt("1.0", "1.0.0"));
+        assert!(version_gt("1.0.1", "1.0"));
+        // 容忍后缀：取前导数字
+        assert!(version_gt("0.9.2-beta", "0.9.1"));
+        assert!(!version_gt("0.9.1", "0.9.1-rc1"));
+    }
 
     // 格式 A：顶层平铺 type（本机较早格式）
     #[test]

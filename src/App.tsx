@@ -6,6 +6,7 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./App.css";
 import logo from "./assets/logo.png";
 import MemoryView from "./MemoryView";
@@ -165,6 +166,17 @@ type RecentSession = {
 };
 type SessionMsg = { role: string; text: string; timestamp: string | null };
 
+// 检查更新（后端 check_for_update 返回）
+type UpdateInfo = {
+  current: string;
+  latest: string;
+  has_update: boolean;
+  notes: string;
+  url: string;
+  published_at: string;
+};
+const DISMISS_KEY = "cd-update-dismissed"; // 记住「忽略此版本」，同版本不再打扰
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -190,6 +202,12 @@ function App() {
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
+
+  // 检查更新：启动静默查 + 设置面板手动查
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateChecking, setUpdateChecking] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState<string | null>(null);
+  const [showNotes, setShowNotes] = useState(false); // 横幅里展开更新内容
 
   // 手机推送（多渠道 hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
@@ -346,6 +364,41 @@ function App() {
   useEffect(() => {
     loadEnv();
   }, []);
+
+  // 检查更新。manual=true 为设置面板手动触发（无论结果都给反馈，且无视「忽略」记录）；
+  // 启动静默检查只在「有新版且未被忽略」时弹横幅，没网/限流静默失败不打扰。
+  async function checkUpdate(manual = false) {
+    setUpdateChecking(true);
+    if (manual) setUpdateMsg(null);
+    try {
+      const info = await invoke<UpdateInfo>("check_for_update");
+      setUpdate(info);
+      if (manual) {
+        setUpdateMsg(
+          info.has_update
+            ? `发现新版本 v${info.latest}`
+            : `已是最新版（v${info.current}）`
+        );
+      } else if (info.has_update) {
+        // 启动静默检查：被忽略过的版本不再弹横幅
+        const dismissed = localStorage.getItem(DISMISS_KEY);
+        if (dismissed === info.latest) setUpdate(null);
+      }
+    } catch (e) {
+      if (manual) setUpdateMsg("检查失败：" + String(e));
+    } finally {
+      setUpdateChecking(false);
+    }
+  }
+  useEffect(() => {
+    checkUpdate(false);
+  }, []);
+
+  function dismissUpdate() {
+    if (update) localStorage.setItem(DISMISS_KEY, update.latest);
+    setUpdate(null);
+    setShowNotes(false);
+  }
 
   async function installPhone() {
     setPhoneBusy(true);
@@ -506,6 +559,23 @@ function App() {
                   关闭窗口时最小化到托盘（后台继续监控/通知）
                 </label>
 
+                <div className="about-section">
+                  <h3>ℹ️ 关于 / 检查更新</h3>
+                  <p className="phone-hint">
+                    当前版本 v{update?.current ?? "—"}。检查到新版会在顶部提示，便携版 / 安装版 / mac 均可手动去下载页更新。
+                  </p>
+                  <div className="about-row">
+                    <button
+                      className="test-btn"
+                      disabled={updateChecking}
+                      onClick={() => checkUpdate(true)}
+                    >
+                      {updateChecking ? "检查中…" : "检查更新"}
+                    </button>
+                    {updateMsg && <span className="about-msg">{updateMsg}</span>}
+                  </div>
+                </div>
+
                 <div className="phone-section">
                   <h3>📱 手机推送</h3>
                   <p className="phone-hint">
@@ -640,6 +710,38 @@ function App() {
           </button>
         </div>
       </header>
+
+      {update?.has_update && (
+        <div className="update-bar">
+          <div className="update-row">
+            <span className="update-text">
+              🎉 新版本 <b>v{update.latest}</b> 可用（当前 v{update.current}）
+            </span>
+            <div className="update-actions">
+              <button
+                className="update-btn ghost"
+                onClick={() => setShowNotes((v) => !v)}
+              >
+                {showNotes ? "收起" : "查看更新内容"}
+              </button>
+              <button
+                className="update-btn primary"
+                onClick={() => openUrl(update.url).catch(() => {})}
+              >
+                打开下载页
+              </button>
+              <button className="update-btn ghost" onClick={dismissUpdate}>
+                忽略此版本
+              </button>
+            </div>
+          </div>
+          {showNotes && update.notes && (
+            <div className="update-notes">
+              <Markdown>{update.notes}</Markdown>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="view-tabs">
         <button

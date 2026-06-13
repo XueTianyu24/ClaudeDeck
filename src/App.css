@@ -326,6 +326,88 @@ body {
   border-radius: 8px;
 }
 
+/* ── 检查更新横幅（header 下方，全局可见）── */
+.update-bar {
+  margin: 0 16px 10px;
+  background: rgba(62, 207, 142, 0.1);
+  border: 1px solid rgba(62, 207, 142, 0.4);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.update-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.update-text {
+  font-size: 13px;
+  color: var(--text);
+}
+.update-text b {
+  color: var(--green);
+}
+.update-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.update-btn {
+  border-radius: 7px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.update-btn.primary {
+  background: var(--green);
+  border: 1px solid var(--green);
+  color: #0b0d12;
+}
+.update-btn.primary:hover {
+  filter: brightness(1.08);
+}
+.update-btn.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+}
+.update-btn.ghost:hover {
+  border-color: var(--green);
+  color: var(--text);
+}
+.update-notes {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(62, 207, 142, 0.25);
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+/* ── 设置面板「关于 / 检查更新」── */
+.about-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.about-section h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.about-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.about-msg {
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .empty {
   flex: 1;
   display: flex;
