@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sysinfo::{Pid, System};
+use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
@@ -158,9 +158,12 @@ fn read_session_views() -> Result<Vec<SessionView>, String> {
     }
 
     let now = now_ms();
-    // new_all() 会刷新进程表，用于 pid 判活（RESEARCH §7 风险 5：文件残留但进程已死）。
-    let sys = System::new_all();
 
+    // 解析与判活拆成两遍：判活只需"进程是否存在"，故只刷会话声明的那几个 pid，
+    // 而非 System::new_all() 全量刷新 CPU/内存/磁盘/网络/全部进程命令行。
+    // 这条路径被前端 3s 轮询 + 后端通知线程 2s 轮询共用，全量刷新会持续吃 CPU、拖慢首屏。
+    // 第一遍：读取 + 解析全部 json（解析失败就地降级，绝不让坏文件拖垮整页）。
+    let mut parsed: Vec<Result<(String, RawSession), SessionView>> = Vec::new();
     let entries = fs::read_dir(&dir).map_err(|e| format!("读取 sessions 目录失败: {e}"))?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -175,13 +178,37 @@ fn read_session_views() -> Result<Vec<SessionView>, String> {
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                out.push(error_view(file, format!("读文件失败: {e}")));
+                parsed.push(Err(error_view(file, format!("读文件失败: {e}"))));
                 continue;
             }
         };
 
         match serde_json::from_str::<RawSession>(&content) {
-            Ok(raw) => {
+            Ok(raw) => parsed.push(Ok((file, raw))),
+            Err(e) => parsed.push(Err(error_view(file, format!("JSON 解析失败: {e}")))),
+        }
+    }
+
+    // 只刷新这些会话声明的 pid（RESEARCH §7 风险 5：文件残留但进程已死）。
+    // remove_dead=true + ProcessRefreshKind::nothing()：不存在的 pid 不会进表，据此判活。
+    let pids: Vec<Pid> = parsed
+        .iter()
+        .filter_map(|p| p.as_ref().ok().and_then(|(_, raw)| raw.pid).map(Pid::from_u32))
+        .collect();
+    let mut sys = System::new();
+    if !pids.is_empty() {
+        sys.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&pids),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+    }
+
+    // 第二遍：构建视图（判活查上面精刷过的进程表）。
+    for item in parsed {
+        match item {
+            Err(v) => out.push(v),
+            Ok((file, raw)) => {
                 let alive = raw
                     .pid
                     .map(|p| sys.process(Pid::from_u32(p)).is_some())
@@ -211,7 +238,6 @@ fn read_session_views() -> Result<Vec<SessionView>, String> {
                     file,
                 });
             }
-            Err(e) => out.push(error_view(file, format!("JSON 解析失败: {e}"))),
         }
     }
 
@@ -250,9 +276,22 @@ const CURL_BIN: &str = "curl.exe";
 #[cfg(not(windows))]
 const CURL_BIN: &str = "curl";
 
+/// 创建一个不弹控制台黑窗的 Command（Windows 上 GUI 进程 spawn 控制台子进程默认会闪一下黑窗）。
+/// 仅用于内部静默调用（curl 探测 / 推送）；launcher 启动 claude 是故意要终端窗口的，不走这里。
+#[allow(unused_mut)]
+fn silent_command(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 /// 检测 curl 是否在 PATH 中可用（手机推送依赖；macOS / Linux 一般自带）。
 fn curl_available() -> bool {
-    Command::new(CURL_BIN)
+    silent_command(CURL_BIN)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -1982,7 +2021,7 @@ fn test_phone_push(channel: String, key: String) -> Result<(), String> {
         ],
     };
 
-    let out = Command::new(CURL_BIN)
+    let out = silent_command(CURL_BIN)
         .args(&args)
         .output()
         .map_err(|e| format!("调用 curl 失败: {e}"))?;

@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.8.4] - 2026-06-13
+
+### 性能
+- **会话扫描不再全量刷新进程表**：`list_sessions` 与后端通知线程原先每次轮询（前端 3s / 后端 2s）都调用 `System::new_all()` 全量刷新 CPU / 内存 / 磁盘 / 网络及所有进程的命令行，仅为给会话 pid 判活。改为只精刷会话声明的那几个 pid（`refresh_processes_specifics` + `ProcessesToUpdate::Some` + `ProcessRefreshKind::nothing()`），**首次启动卡顿消除，后台持续 CPU 占用大幅下降**。
+
+### 改进
+- 内部 curl 调用（环境探测 / 手机推送测试）在 Windows 上加 `CREATE_NO_WINDOW`，消除一闪而过的控制台黑窗（启动器拉起 claude 仍保留终端窗口）。
+
 ## [0.8.3] - 2026-06-11
 
 ### 新增
