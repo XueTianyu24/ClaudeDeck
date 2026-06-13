@@ -1,5 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -309,6 +311,264 @@ fn get_env_status() -> EnvStatus {
         sessions_dir_exists: sessions.map(|s| s.exists()).unwrap_or(false),
         curl_available: curl_available(),
     }
+}
+
+// ── 会话历史（最近会话浏览 + 内容入口）──────────────────────────
+//
+// 数据源：~/.claude/projects/<编码路径>/<sessionId>.jsonl（持久 transcript）。
+// 与 list_sessions（运行中状态）互补：这里列「最近 / 历史」会话，关机后仍在，
+// 解决多开会话「关机后忘了开过哪些、该去哪个目录重开、聊到哪了」。
+// 性能：先按文件 mtime 排序、截到上限，只对入选会话**读头部找 cwd + 尾部找
+// aiTitle/lastPrompt**，不全量解析大 jsonl。
+
+#[derive(Debug, Serialize)]
+struct RecentSession {
+    session_id: String,
+    /// jsonl 绝对路径（前端读详情用）
+    file: String,
+    /// 会话工作目录（来自 jsonl 的 cwd 字段；启动器联动用）
+    cwd: Option<String>,
+    /// 项目名（cwd 末段；无 cwd 时退回编码目录名）
+    project: Option<String>,
+    /// CC 自动生成的会话标题（aiTitle）
+    title: Option<String>,
+    /// 用户最后一次 prompt（标题缺失时前端兜底展示）
+    last_prompt: Option<String>,
+    /// 最后活跃时间（文件 mtime，unix ms）
+    last_active_ms: i64,
+    /// 当前是否有活进程（交叉 sessions/*.json）
+    running: bool,
+}
+
+/// 读文件前 n 行（找 cwd 用；cwd 在首个 user 事件，靠前）。
+fn read_head_lines(path: &Path, n: usize) -> Vec<String> {
+    match File::open(path) {
+        Ok(f) => BufReader::new(f)
+            .lines()
+            .take(n)
+            .map_while(Result::ok)
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// 读文件尾部约 n 字节并按行切（找 aiTitle/lastPrompt 用；它们靠后、不断更新）。
+/// 丢弃首行（可能被从中间截断）。
+fn read_tail_lines(path: &Path, n: u64) -> Vec<String> {
+    let mut f = match File::open(path) {
+        Ok(f) => f,
+        Err(_) => return Vec::new(),
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(n);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = String::from_utf8_lossy(&buf)
+        .lines()
+        .map(|s| s.to_string())
+        .collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines
+}
+
+/// 在若干 JSON 行里找首个带 cwd 的事件。
+fn find_cwd(lines: &[String]) -> Option<String> {
+    for ln in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(ln) {
+            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
+                if !c.is_empty() {
+                    return Some(c.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 在尾部 JSON 行里取最新的 aiTitle / lastPrompt（正序遍历、保留最后出现）。
+fn find_title_prompt(lines: &[String]) -> (Option<String>, Option<String>) {
+    let mut title = None;
+    let mut prompt = None;
+    for ln in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(ln) {
+            if let Some(t) = v.get("aiTitle").and_then(|x| x.as_str()) {
+                if !t.trim().is_empty() {
+                    title = Some(t.trim().to_string());
+                }
+            }
+            if let Some(p) = v.get("lastPrompt").and_then(|x| x.as_str()) {
+                if !p.trim().is_empty() {
+                    prompt = Some(p.trim().to_string());
+                }
+            }
+        }
+    }
+    (title, prompt)
+}
+
+#[tauri::command]
+fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, String> {
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let cap = limit.unwrap_or(40).max(1);
+
+    // 运行中的 sessionId 集合 → 列表里标「运行中」并置顶。
+    let running: HashSet<String> = read_session_views()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.alive)
+        .filter_map(|s| s.session_id)
+        .collect();
+
+    // 收集所有 jsonl 的 (路径, mtime)。
+    let mut files: Vec<(PathBuf, i64)> = Vec::new();
+    for proj in fs::read_dir(&root)
+        .map_err(|e| format!("读取 projects 目录失败: {e}"))?
+        .flatten()
+    {
+        let pdir = proj.path();
+        if !pdir.is_dir() {
+            continue;
+        }
+        if let Ok(rd) = fs::read_dir(&pdir) {
+            for f in rd.flatten() {
+                let p = f.path();
+                if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let mt = f
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                files.push((p, mt));
+            }
+        }
+    }
+
+    // 按最后活跃倒序，截到上限，只对入选者解析头尾。
+    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.truncate(cap);
+
+    let mut out = Vec::new();
+    for (path, mt) in files {
+        let head = read_head_lines(&path, 40);
+        let tail = read_tail_lines(&path, 64 * 1024);
+        let cwd = find_cwd(&head).or_else(|| find_cwd(&tail));
+        let (title, last_prompt) = find_title_prompt(&tail);
+        let session_id = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let project = cwd.as_deref().and_then(project_from_cwd).or_else(|| {
+            path.parent()
+                .and_then(|d| d.file_name())
+                .map(|s| decode_project_label(s.to_string_lossy().as_ref()))
+        });
+        let running = running.contains(&session_id);
+        out.push(RecentSession {
+            session_id,
+            file: path.to_string_lossy().to_string(),
+            cwd,
+            project,
+            title,
+            last_prompt,
+            last_active_ms: mt,
+            running,
+        });
+    }
+    // 运行中置顶，其余维持 mtime 倒序。
+    out.sort_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| b.last_active_ms.cmp(&a.last_active_ms))
+    });
+    Ok(out)
+}
+
+/// 会话详情里的一条消息（只取真实对话文本，跳过工具往返）。
+#[derive(Debug, Serialize)]
+struct SessionMsg {
+    role: String,
+    text: String,
+    timestamp: Option<String>,
+}
+
+/// 从 message.content 抽纯文本（字符串直接取；数组取 type=text 的 block）。
+fn extract_msg_text(message: Option<&Value>) -> String {
+    let m = match message {
+        Some(m) => m,
+        None => return String::new(),
+    };
+    match m.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(arr)) => {
+            let mut out = String::new();
+            for b in arr {
+                if b.get("type").and_then(|x| x.as_str()) == Some("text") {
+                    if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
+                        if !out.is_empty() {
+                            out.push('\n');
+                        }
+                        out.push_str(t);
+                    }
+                }
+            }
+            out
+        }
+        _ => String::new(),
+    }
+}
+
+/// 读某会话尾部最近 max 条真实对话消息（user/assistant 文本，跳过纯工具往返）。
+#[tauri::command]
+fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>, String> {
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    let path = PathBuf::from(&file);
+    // 安全：必须落在 projects 目录内、且是 jsonl，挡路径穿越。
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") || !path.starts_with(&root) {
+        return Err("非法的会话文件路径".into());
+    }
+    let n = max.unwrap_or(8).max(1);
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取会话失败: {e}"))?;
+
+    let mut msgs: Vec<SessionMsg> = Vec::new();
+    for ln in content.lines() {
+        let v = match serde_json::from_str::<Value>(ln) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+        if t != "user" && t != "assistant" {
+            continue;
+        }
+        let text = extract_msg_text(v.get("message"));
+        if text.trim().is_empty() {
+            continue;
+        }
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        msgs.push(SessionMsg {
+            role: t.to_string(),
+            text,
+            timestamp,
+        });
+    }
+    let start = msgs.len().saturating_sub(n);
+    Ok(msgs.split_off(start))
 }
 
 // ── 记忆可视化 ────────────────────────────────────────────────
@@ -2234,6 +2494,8 @@ pub fn run() {
             install_phone_hook,
             uninstall_phone_hook,
             test_phone_push,
+            list_recent_sessions,
+            read_session_tail,
             usage::list_token_usage
         ])
         .run(tauri::generate_context!())

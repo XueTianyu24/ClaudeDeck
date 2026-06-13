@@ -12,6 +12,7 @@ import MemoryView from "./MemoryView";
 import SkillView from "./SkillView";
 import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
+import Markdown from "./Markdown";
 
 type Session = {
   pid: number | null;
@@ -50,44 +51,8 @@ function fmtIdle(ms: number | null): string {
   return `${fmtDuration(ms)}前`;
 }
 
-// CC 会话 status 枚举（实测自 2.1.165 二进制：Blf=["busy","shell","idle","waiting"]）
-type State =
-  | "stuck"
-  | "busy"
-  | "shell"
-  | "waiting"
-  | "idle"
-  | "dead"
-  | "error"
-  | "unknown";
-
-function sessionState(s: Session): State {
-  if (s.parse_error) return "error";
-  if (!s.alive) return "dead";
-  if (s.stuck) return "stuck";
-  if (s.status === "busy") return "busy";
-  if (s.status === "shell") return "shell";
-  if (s.status === "waiting") return "waiting";
-  if (s.status === "idle") return "idle";
-  return "unknown";
-}
-
-const STATE_LABEL: Record<State, string> = {
-  stuck: "疑似卡死",
-  busy: "运行中",
-  shell: "执行命令",
-  waiting: "等待输入",
-  idle: "空闲",
-  dead: "进程已退",
-  error: "解析失败",
-  unknown: "未知",
-};
-
-// 未知状态兜底：把 CC 写入的原始 status 文本带出来，便于发现未映射的新值
-function stateLabel(st: State, s: Session): string {
-  if (st === "unknown" && s.status) return `未知(${s.status})`;
-  return STATE_LABEL[st];
-}
+// 旧的「运行中状态」枚举/标签已随状态表移除：会话监控改为「最近会话列表」。
+// 运行中与否现由后端 list_recent_sessions 的 running 字段标记（交叉 sessions/*.json）。
 
 type Theme = "dark" | "light";
 
@@ -187,6 +152,19 @@ type EnvStatus = {
   curl_available: boolean;
 };
 
+// ── 最近会话（会话历史浏览 + 内容入口）──
+type RecentSession = {
+  session_id: string;
+  file: string;
+  cwd: string | null;
+  project: string | null;
+  title: string | null;
+  last_prompt: string | null;
+  last_active_ms: number;
+  running: boolean;
+};
+type SessionMsg = { role: string; text: string; timestamp: string | null };
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -199,6 +177,16 @@ function App() {
   const [view, setView] = useState<
     "sessions" | "memory" | "skills" | "launcher" | "usage"
   >("sessions");
+
+  // 最近会话列表（会话监控 tab 的新主体）
+  const [recent, setRecent] = useState<RecentSession[]>([]);
+  const [recentErr, setRecentErr] = useState<string | null>(null);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentLimit, setRecentLimit] = useState(40);
+  const [expanded, setExpanded] = useState<string | null>(null); // 展开中的会话 file
+  const [tail, setTail] = useState<SessionMsg[]>([]);
+  const [tailLoading, setTailLoading] = useState(false);
+  const [launchMsg, setLaunchMsg] = useState<string | null>(null);
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -271,6 +259,60 @@ function App() {
     const id = setInterval(refresh, POLL_MS);
     return () => clearInterval(id);
   }, []);
+
+  // 最近会话：切到「会话监控」tab 时加载，不进 3s 轮询（历史会话不必高频刷）。
+  async function loadRecent(limit = recentLimit) {
+    setRecentLoading(true);
+    try {
+      setRecent(await invoke<RecentSession[]>("list_recent_sessions", { limit }));
+      setRecentErr(null);
+    } catch (e) {
+      setRecentErr(String(e));
+    } finally {
+      setRecentLoading(false);
+    }
+  }
+  useEffect(() => {
+    if (view === "sessions") loadRecent();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  // 点开/收起某会话，展开时拉它的最后几条消息
+  async function toggleExpand(s: RecentSession) {
+    if (expanded === s.file) {
+      setExpanded(null);
+      setTail([]);
+      return;
+    }
+    setExpanded(s.file);
+    setTail([]);
+    setTailLoading(true);
+    try {
+      setTail(
+        await invoke<SessionMsg[]>("read_session_tail", { file: s.file, max: 8 })
+      );
+    } catch {
+      setTail([]);
+    } finally {
+      setTailLoading(false);
+    }
+  }
+
+  function flashLaunch(t: string) {
+    setLaunchMsg(t);
+    window.setTimeout(() => setLaunchMsg(null), 2800);
+  }
+  // 一键在该会话原目录重开 Claude（复用启动器：会带启动器里配的代理/前置命令）
+  async function launchAt(s: RecentSession) {
+    if (!s.cwd) return;
+    try {
+      await invoke("launcher_launch", { path: s.cwd });
+      flashLaunch(`✅ 已在 ${s.project || s.cwd} 启动 Claude`);
+      loadRecent();
+    } catch (e) {
+      flashLaunch("❌ " + String(e));
+    }
+  }
 
   function testNotify() {
     notify("🔔 ClaudeDeck 测试通知", "通知和声音正常工作");
@@ -640,66 +682,130 @@ function App() {
         <SkillView />
       ) : view === "memory" ? (
         <MemoryView />
-      ) : error ? (
-        <div className="banner err">读取失败：{error}</div>
-      ) : sessions.length === 0 ? (
-        <div className="empty">
-          {env && !env.claude_dir_exists ? (
-            <>
-              <p>未检测到 Claude Code</p>
-              <span>
-                没有找到 <code>~/.claude</code> 目录。请确认已安装 Claude Code
-                并至少运行过一次。
-              </span>
-            </>
+      ) : (
+        <div className="recent-wrap">
+          {(recentErr || error) && (
+            <div className="banner err">{recentErr || error}</div>
+          )}
+          {launchMsg && <div className="banner ok">{launchMsg}</div>}
+          <div className="recent-head">
+            <span className="recent-hint">
+              最近的 Claude Code 会话 — 点开看最后几条消息，▶ 在原目录重新打开
+            </span>
+            <button className="refresh" onClick={() => loadRecent()} title="刷新">
+              ↻
+            </button>
+          </div>
+          {recent.length === 0 ? (
+            <div className="empty">
+              {recentLoading ? (
+                <p>加载中…</p>
+              ) : env && !env.claude_dir_exists ? (
+                <>
+                  <p>未检测到 Claude Code</p>
+                  <span>
+                    没有找到 <code>~/.claude</code> 目录。请确认已安装 Claude
+                    Code 并至少运行过一次。
+                  </span>
+                </>
+              ) : (
+                <>
+                  <p>还没有历史会话</p>
+                  <span>在任意目录跑过 Claude Code 后，会话会出现在这里</span>
+                </>
+              )}
+            </div>
           ) : (
             <>
-              <p>当前没有运行中的 Claude Code 会话</p>
-              <span>启动一个 CC 会话后会自动出现在这里</span>
+              <ul className="rs-list">
+                {recent.map((s) => (
+                  <li
+                    key={s.file}
+                    className={`rs-row ${expanded === s.file ? "open" : ""}`}
+                  >
+                    <div className="rs-bar" onClick={() => toggleExpand(s)}>
+                      <div className="rs-info">
+                        <div className="rs-titleline">
+                          <span className="rs-caret">
+                            {expanded === s.file ? "▾" : "▸"}
+                          </span>
+                          {s.running && (
+                            <span className="badge busy">
+                              <i className="dot" />
+                              运行中
+                            </span>
+                          )}
+                          <span className="rs-title">
+                            {s.title || s.last_prompt || "（未命名会话）"}
+                          </span>
+                        </div>
+                        <div className="rs-subline" title={s.cwd || ""}>
+                          <span className="rs-proj">{s.project || "—"}</span>
+                          {s.cwd && <span className="rs-path">{s.cwd}</span>}
+                        </div>
+                      </div>
+                      <div className="rs-right">
+                        <span className="rs-ago">
+                          {fmtIdle(Date.now() - s.last_active_ms)}
+                        </span>
+                        <button
+                          className="rs-launch"
+                          disabled={!s.cwd}
+                          title={
+                            s.cwd ? `在 ${s.cwd} 启动 Claude` : "该会话无目录信息"
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            launchAt(s);
+                          }}
+                        >
+                          ▶ 在此启动
+                        </button>
+                      </div>
+                    </div>
+                    {expanded === s.file && (
+                      <div className="rs-detail">
+                        {tailLoading ? (
+                          <p className="rs-loading">加载消息…</p>
+                        ) : tail.length === 0 ? (
+                          <p className="rs-loading">没有可显示的对话消息</p>
+                        ) : (
+                          tail.map((m, i) => (
+                            <div key={i} className={`rs-msg ${m.role}`}>
+                              <div className="rs-role">
+                                {m.role === "user" ? "🧑 你" : "🤖 Claude"}
+                              </div>
+                              <div className="rs-text">
+                                <Markdown>
+                                  {m.text.length > 1500
+                                    ? m.text.slice(0, 1500) + " …（略）"
+                                    : m.text}
+                                </Markdown>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+              {recent.length >= recentLimit && (
+                <div className="rs-more">
+                  <button
+                    className="lc-btn"
+                    onClick={() => {
+                      const n = recentLimit + 40;
+                      setRecentLimit(n);
+                      loadRecent(n);
+                    }}
+                  >
+                    加载更多
+                  </button>
+                </div>
+              )}
             </>
           )}
-        </div>
-      ) : (
-        <div className="table-wrap">
-          <table className="sessions">
-            <thead>
-              <tr>
-                <th>状态</th>
-                <th>项目</th>
-                <th>PID</th>
-                <th>运行时长</th>
-                <th>最后心跳</th>
-                <th>版本</th>
-                <th>类型</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sessions.map((s) => {
-                const st = sessionState(s);
-                return (
-                  <tr key={s.file} className={st === "dead" || st === "error" ? "muted" : ""}>
-                    <td>
-                      <span className={`badge ${st}`}>
-                        <i className="dot" />
-                        {stateLabel(st, s)}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="proj">{s.project ?? "—"}</div>
-                      <div className="cwd" title={s.cwd ?? ""}>
-                        {s.parse_error ? s.parse_error : s.cwd ?? s.file}
-                      </div>
-                    </td>
-                    <td className="mono">{s.pid ?? "—"}</td>
-                    <td className="mono">{fmtDuration(s.running_ms)}</td>
-                    <td className="mono">{fmtIdle(s.idle_ms)}</td>
-                    <td className="mono dim">{s.version ?? "—"}</td>
-                    <td className="dim">{s.kind ?? "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
         </div>
       )}
     </main>
