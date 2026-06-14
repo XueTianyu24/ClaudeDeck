@@ -15,6 +15,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
+use tauri_plugin_autostart::ManagerExt;
 
 mod aumid;
 mod usage;
@@ -2003,6 +2004,317 @@ fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
     Ok(cfg)
 }
 
+// ── 定时开窗（warmup）────────────────────────────────────────────────
+// Claude 的 5 小时使用窗口从「发出第一条消息」起算（rolling，不对齐自然日）——
+// 仅启动 claude REPL 不发消息**不会**开窗。所以这里到点跑 `claude -p "<prompt>"`
+// （headless：非交互发一条极简消息→拿回复即退出，token 极小），真正开启 5h 窗口。
+// 调度引擎在 app 内（后台线程 + 系统托盘常驻 + 可选开机自启），配置全在 app 内可视化、
+// 跨平台一致、卸载零残留。复用启动器的代理 pre_cmd（开窗要发网络请求）。
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct WarmupTrigger {
+    id: String,
+    /// 触发时刻 "HH:MM"（24 小时制，本地时区）
+    time: String,
+    /// 生效星期：0=周一 .. 6=周日；空 = 每天
+    days: Vec<u8>,
+    enabled: bool,
+}
+impl Default for WarmupTrigger {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            time: "07:00".into(),
+            days: vec![],
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct ScheduleConfig {
+    /// 总开关：关闭则所有触发点都不生效
+    enabled: bool,
+    triggers: Vec<WarmupTrigger>,
+    /// 开窗时发给 claude 的极简 prompt
+    warmup_prompt: String,
+    /// 上次开窗时间（unix ms，0=从未）
+    last_run_ms: i64,
+    last_run_ok: bool,
+    last_run_msg: String,
+}
+impl Default for ScheduleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            triggers: vec![],
+            warmup_prompt: "ok".into(),
+            last_run_ms: 0,
+            last_run_ok: false,
+            last_run_msg: String::new(),
+        }
+    }
+}
+
+fn schedule_config_path() -> Option<PathBuf> {
+    launcher_config_dir().map(|d| d.join("schedule.json"))
+}
+
+fn load_schedule_config() -> ScheduleConfig {
+    let Some(path) = schedule_config_path() else {
+        return ScheduleConfig::default();
+    };
+    if !path.exists() {
+        return ScheduleConfig::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(t) => serde_json::from_str(&t).unwrap_or_default(),
+        Err(_) => ScheduleConfig::default(),
+    }
+}
+
+fn save_schedule_config(cfg: &ScheduleConfig) -> Result<(), String> {
+    let dir = launcher_config_dir().ok_or("无法定位配置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let path = schedule_config_path().ok_or("无法定位定时配置文件")?;
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
+}
+
+/// 校验 "HH:MM"（两位时、两位分，24 小时制）。
+fn valid_hhmm(s: &str) -> bool {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 2 || parts[0].len() != 2 || parts[1].len() != 2 {
+        return false;
+    }
+    match (parts[0].parse::<u32>(), parts[1].parse::<u32>()) {
+        (Ok(h), Ok(m)) => h < 24 && m < 60,
+        _ => false,
+    }
+}
+
+/// PowerShell 单引号字面量转义（内部单引号翻倍）。
+#[cfg(windows)]
+fn ps_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// 同步跑一次开窗（`claude -p <prompt>`），带 120s 超时，返回 (成功?, 简述)。
+/// 复用启动器的代理 pre_cmd——开窗要发网络请求，挂代理后用户才连得上。
+fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, String) {
+    let p = if prompt.trim().is_empty() {
+        "ok"
+    } else {
+        prompt.trim()
+    };
+
+    #[cfg(windows)]
+    let mut cmd = {
+        let script = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+            format!("{}\nclaude -p {}", pre_cmd.trim(), ps_single_quote(p))
+        } else {
+            format!("claude -p {}", ps_single_quote(p))
+        };
+        let b64 = ps_encoded(&script);
+        let mut c = silent_command("powershell");
+        c.args(["-NoProfile", "-EncodedCommand", &b64]);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
+            format!("{} ; claude -p {}", pre_cmd.trim(), sh_quote(p))
+        } else {
+            format!("claude -p {}", sh_quote(p))
+        };
+        // 登录 shell 以拿到含 claude 的 PATH。
+        let mut c = silent_command("sh");
+        c.args(["-lc", &inner]);
+        c
+    };
+
+    // 在用户主目录跑（稳定、通常已被 claude 信任，避开新目录的 folder-trust 询问）。
+    if let Some(home) = dirs::home_dir() {
+        cmd.current_dir(home);
+    }
+
+    // 在独立线程跑（output() 会读尽管道、且自动关 stdin，claude -p 不会卡等输入），
+    // 用 channel 套 120s 超时，避免极端情况下挂死调度线程。
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(cmd.output());
+    });
+    match rx.recv_timeout(Duration::from_secs(120)) {
+        Ok(Ok(o)) => {
+            if o.status.success() {
+                (true, "开窗成功：已发送一条消息，5 小时窗口开始计时".to_string())
+            } else {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let snippet: String = err.trim().chars().take(300).collect();
+                (
+                    false,
+                    format!(
+                        "claude 返回非 0：{}",
+                        if snippet.is_empty() {
+                            "(无错误输出，确认已登录 claude 且代理可用)".into()
+                        } else {
+                            snippet
+                        }
+                    ),
+                )
+            }
+        }
+        Ok(Err(e)) => (false, format!("无法启动 claude：{e}")),
+        Err(_) => (false, "开窗超时（120 秒未返回）".to_string()),
+    }
+}
+
+fn record_warmup_result(ok: bool, msg: &str) {
+    let mut cfg = load_schedule_config();
+    cfg.last_run_ms = now_ms();
+    cfg.last_run_ok = ok;
+    cfg.last_run_msg = msg.to_string();
+    let _ = save_schedule_config(&cfg);
+}
+
+/// 后台调度线程：每 30s 醒一次，比对本地时间与各启用触发点，命中即开窗。
+/// 按「分钟键」去重，确保同一时刻只触发一次。
+fn scheduler_loop(app: tauri::AppHandle) {
+    use chrono::{Datelike, Local};
+    let mut last_fired: HashMap<String, String> = HashMap::new();
+    loop {
+        std::thread::sleep(Duration::from_secs(30));
+        let cfg = load_schedule_config();
+        if !cfg.enabled {
+            continue;
+        }
+        let now = Local::now();
+        let hm = now.format("%H:%M").to_string();
+        let minute_key = now.format("%Y-%m-%d %H:%M").to_string();
+        let weekday = now.weekday().num_days_from_monday() as u8; // 0=周一
+        for t in &cfg.triggers {
+            if !t.enabled || t.time != hm {
+                continue;
+            }
+            if !t.days.is_empty() && !t.days.contains(&weekday) {
+                continue;
+            }
+            if last_fired.get(&t.id).map(|s| s.as_str()) == Some(minute_key.as_str()) {
+                continue;
+            }
+            last_fired.insert(t.id.clone(), minute_key.clone());
+
+            let lc = load_launcher_config();
+            let (ok, msg) = run_warmup(&cfg.warmup_prompt, lc.pre_cmd_enabled, &lc.pre_cmd);
+            record_warmup_result(ok, &msg);
+            let title = if ok {
+                "⏰ Claude 5 小时窗口已开启"
+            } else {
+                "⚠️ 定时开窗失败"
+            };
+            let _ = app
+                .notification()
+                .builder()
+                .title(title)
+                .body(msg.as_str())
+                .show();
+        }
+    }
+}
+
+#[tauri::command]
+fn schedule_get_config() -> ScheduleConfig {
+    load_schedule_config()
+}
+
+#[tauri::command]
+fn schedule_set_enabled(enabled: bool) -> Result<ScheduleConfig, String> {
+    let mut cfg = load_schedule_config();
+    cfg.enabled = enabled;
+    save_schedule_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn schedule_set_prompt(prompt: String) -> Result<ScheduleConfig, String> {
+    let mut cfg = load_schedule_config();
+    cfg.warmup_prompt = prompt;
+    save_schedule_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn schedule_add_trigger(time: String, days: Vec<u8>) -> Result<ScheduleConfig, String> {
+    let t = time.trim().to_string();
+    if !valid_hhmm(&t) {
+        return Err("时间格式应为 HH:MM（如 07:00）".into());
+    }
+    let mut days = days;
+    days.retain(|d| *d <= 6);
+    days.sort_unstable();
+    days.dedup();
+    let mut cfg = load_schedule_config();
+    if cfg.triggers.iter().any(|x| x.time == t && x.days == days) {
+        return Err("已存在相同时间与星期的触发点".into());
+    }
+    let id = format!("{}-{}", t.replace(':', ""), now_ms());
+    cfg.triggers.push(WarmupTrigger {
+        id,
+        time: t,
+        days,
+        enabled: true,
+    });
+    cfg.triggers.sort_by(|a, b| a.time.cmp(&b.time));
+    save_schedule_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn schedule_remove_trigger(id: String) -> Result<ScheduleConfig, String> {
+    let mut cfg = load_schedule_config();
+    cfg.triggers.retain(|x| x.id != id);
+    save_schedule_config(&cfg)?;
+    Ok(cfg)
+}
+
+#[tauri::command]
+fn schedule_toggle_trigger(id: String, enabled: bool) -> Result<ScheduleConfig, String> {
+    let mut cfg = load_schedule_config();
+    if let Some(t) = cfg.triggers.iter_mut().find(|x| x.id == id) {
+        t.enabled = enabled;
+    }
+    save_schedule_config(&cfg)?;
+    Ok(cfg)
+}
+
+/// 立即手动开窗一次（测试用），同步返回最新配置（含 last_run_*）。失败抛错。
+#[tauri::command]
+fn schedule_run_now() -> Result<ScheduleConfig, String> {
+    let cfg = load_schedule_config();
+    let lc = load_launcher_config();
+    let (ok, msg) = run_warmup(&cfg.warmup_prompt, lc.pre_cmd_enabled, &lc.pre_cmd);
+    record_warmup_result(ok, &msg);
+    if !ok {
+        return Err(msg);
+    }
+    Ok(load_schedule_config())
+}
+
+#[tauri::command]
+fn schedule_get_autostart(app: tauri::AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn schedule_set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    let m = app.autolaunch();
+    let r = if enabled { m.enable() } else { m.disable() };
+    r.map_err(|e| format!("设置开机自启失败：{e}"))?;
+    Ok(m.is_enabled().unwrap_or(enabled))
+}
+
 /// 前端下发「关窗是否隐藏到托盘」（true=隐藏常驻，false=关窗即退出）。
 #[tauri::command]
 fn set_close_to_tray(enabled: bool, state: tauri::State<Arc<AtomicBool>>) {
@@ -2619,6 +2931,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        // 开机自启：定时开窗需要 app 到点在跑。自启时带 --autostart 参数（启动即隐藏到托盘）。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .manage(cfg.clone())
         .manage(close_to_tray.clone())
         .setup(move |app| {
@@ -2631,6 +2948,17 @@ pub fn run() {
             let handle = app.handle().clone();
             let cfg_thread = cfg.clone();
             std::thread::spawn(move || notifier_loop(handle, cfg_thread));
+
+            // 定时开窗调度线程：到点跑 claude -p 开启 5h 窗口。
+            let sched_handle = app.handle().clone();
+            std::thread::spawn(move || scheduler_loop(sched_handle));
+
+            // 开机自启拉起时（带 --autostart），启动即隐藏到托盘，后台跑调度、不弹窗打扰。
+            if std::env::args().any(|a| a == "--autostart") {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
 
             // 系统托盘：关窗最小化到托盘后，左键托盘图标唤回，菜单可真正退出。
             // 让通知 / 提示音 / 后端通知线程在后台常驻（关窗不再杀进程）。
@@ -2704,6 +3032,15 @@ pub fn run() {
             launcher_save_precmd,
             launcher_set_use_wt,
             launcher_launch,
+            schedule_get_config,
+            schedule_set_enabled,
+            schedule_set_prompt,
+            schedule_add_trigger,
+            schedule_remove_trigger,
+            schedule_toggle_trigger,
+            schedule_run_now,
+            schedule_get_autostart,
+            schedule_set_autostart,
             set_close_to_tray,
             set_notify_config,
             get_phone_hook_status,

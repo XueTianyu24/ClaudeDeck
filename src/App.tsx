@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -195,10 +195,11 @@ function App() {
   const [recentErr, setRecentErr] = useState<string | null>(null);
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentLimit, setRecentLimit] = useState(40);
-  const [expanded, setExpanded] = useState<string | null>(null); // 展开中的会话 file
+  const [expanded, setExpanded] = useState<string | null>(null); // 展开中的会话行 key
   const [tail, setTail] = useState<SessionMsg[]>([]);
   const [tailLoading, setTailLoading] = useState(false);
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set()); // 折叠的项目分组 key
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -295,14 +296,15 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
-  // 点开/收起某会话，展开时拉它的最后几条消息
-  async function toggleExpand(s: RecentSession) {
-    if (expanded === s.file) {
+  // 点开/收起某会话，展开时拉它的最后几条消息。
+  // rowKey 唯一标识一行（同一会话在「最近」与「按项目」两处用不同前缀，互不牵连）。
+  async function toggleExpand(rowKey: string, s: RecentSession) {
+    if (expanded === rowKey) {
       setExpanded(null);
       setTail([]);
       return;
     }
-    setExpanded(s.file);
+    setExpanded(rowKey);
     setTail([]);
     setTailLoading(true);
     try {
@@ -314,6 +316,127 @@ function App() {
     } finally {
       setTailLoading(false);
     }
+  }
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // 最近 5 个会话（跨项目，纯按活跃时间倒序，不受运行中置顶影响）
+  const recentTop5 = useMemo(
+    () =>
+      [...recent]
+        .sort((a, b) => b.last_active_ms - a.last_active_ms)
+        .slice(0, 5),
+    [recent]
+  );
+
+  // 按项目目录（cwd）分组：组内运行中置顶再按活跃倒序；含运行中的组排前、其余按最近活跃倒序
+  const groups = useMemo(() => {
+    const map = new Map<string, RecentSession[]>();
+    for (const s of recent) {
+      const key = s.cwd || s.project || "（未知目录）";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(s);
+    }
+    const arr = [...map.entries()].map(([key, items]) => {
+      items.sort(
+        (a, b) =>
+          Number(b.running) - Number(a.running) ||
+          b.last_active_ms - a.last_active_ms
+      );
+      return {
+        key,
+        label: items[0].project || key,
+        cwd: items[0].cwd,
+        items,
+        running: items.some((i) => i.running),
+        latest: Math.max(...items.map((i) => i.last_active_ms)),
+      };
+    });
+    arr.sort(
+      (a, b) =>
+        Number(b.running) - Number(a.running) || b.latest - a.latest
+    );
+    return arr;
+  }, [recent]);
+
+  // 渲染单条会话行。rowKey 区分两处展示；showMeta=false 时隐藏项目/路径副行（分组内组头已带）
+  function renderRow(s: RecentSession, rowKey: string, showMeta: boolean) {
+    return (
+      <li
+        key={rowKey}
+        className={`rs-row ${expanded === rowKey ? "open" : ""}`}
+      >
+        <div className="rs-bar" onClick={() => toggleExpand(rowKey, s)}>
+          <div className="rs-info">
+            <div className="rs-titleline">
+              <span className="rs-caret">
+                {expanded === rowKey ? "▾" : "▸"}
+              </span>
+              {s.running && (
+                <span className="badge busy">
+                  <i className="dot" />
+                  运行中
+                </span>
+              )}
+              <span className="rs-title">
+                {s.title || s.last_prompt || "（未命名会话）"}
+              </span>
+            </div>
+            {showMeta && (
+              <div className="rs-subline" title={s.cwd || ""}>
+                <span className="rs-proj">{s.project || "—"}</span>
+                {s.cwd && <span className="rs-path">{s.cwd}</span>}
+              </div>
+            )}
+          </div>
+          <div className="rs-right">
+            <span className="rs-ago">{fmtIdle(Date.now() - s.last_active_ms)}</span>
+            <button
+              className="rs-launch"
+              disabled={!s.cwd}
+              title={s.cwd ? `在 ${s.cwd} 启动 Claude` : "该会话无目录信息"}
+              onClick={(e) => {
+                e.stopPropagation();
+                launchAt(s);
+              }}
+            >
+              ▶ 在此启动
+            </button>
+          </div>
+        </div>
+        {expanded === rowKey && (
+          <div className="rs-detail">
+            {tailLoading ? (
+              <p className="rs-loading">加载消息…</p>
+            ) : tail.length === 0 ? (
+              <p className="rs-loading">没有可显示的对话消息</p>
+            ) : (
+              tail.map((m, i) => (
+                <div key={i} className={`rs-msg ${m.role}`}>
+                  <div className="rs-role">
+                    {m.role === "user" ? "🧑 你" : "🤖 Claude"}
+                  </div>
+                  <div className="rs-text">
+                    <Markdown>
+                      {m.text.length > 1500
+                        ? m.text.slice(0, 1500) + " …（略）"
+                        : m.text}
+                    </Markdown>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        )}
+      </li>
+    );
   }
 
   function flashLaunch(t: string) {
@@ -792,7 +915,7 @@ function App() {
           {launchMsg && <div className="banner ok">{launchMsg}</div>}
           <div className="recent-head">
             <span className="recent-hint">
-              最近的 Claude Code 会话 — 点开看最后几条消息，▶ 在原目录重新打开
+              最近 5 个会话 + 按项目目录分组 — 点开看最后几条消息，▶ 在原目录重新打开
             </span>
             <button className="refresh" onClick={() => loadRecent()} title="刷新">
               ↻
@@ -819,79 +942,50 @@ function App() {
             </div>
           ) : (
             <>
-              <ul className="rs-list">
-                {recent.map((s) => (
-                  <li
-                    key={s.file}
-                    className={`rs-row ${expanded === s.file ? "open" : ""}`}
-                  >
-                    <div className="rs-bar" onClick={() => toggleExpand(s)}>
-                      <div className="rs-info">
-                        <div className="rs-titleline">
-                          <span className="rs-caret">
-                            {expanded === s.file ? "▾" : "▸"}
-                          </span>
-                          {s.running && (
-                            <span className="badge busy">
-                              <i className="dot" />
-                              运行中
-                            </span>
-                          )}
-                          <span className="rs-title">
-                            {s.title || s.last_prompt || "（未命名会话）"}
-                          </span>
-                        </div>
-                        <div className="rs-subline" title={s.cwd || ""}>
-                          <span className="rs-proj">{s.project || "—"}</span>
-                          {s.cwd && <span className="rs-path">{s.cwd}</span>}
-                        </div>
-                      </div>
-                      <div className="rs-right">
-                        <span className="rs-ago">
-                          {fmtIdle(Date.now() - s.last_active_ms)}
+              <section className="rs-section">
+                <h3 className="rs-section-title">⏱ 最近会话</h3>
+                <ul className="rs-list">
+                  {recentTop5.map((s) => renderRow(s, `top:${s.file}`, true))}
+                </ul>
+              </section>
+
+              <section className="rs-section">
+                <h3 className="rs-section-title">
+                  📁 按项目浏览 · {groups.length} 个目录
+                </h3>
+                {groups.map((g) => (
+                  <div key={g.key} className="rs-group">
+                    <div
+                      className="rs-group-head"
+                      onClick={() => toggleGroup(g.key)}
+                    >
+                      <span className="rs-caret">
+                        {collapsedGroups.has(g.key) ? "▸" : "▾"}
+                      </span>
+                      {g.running && (
+                        <span className="badge busy">
+                          <i className="dot" />
+                          运行中
                         </span>
-                        <button
-                          className="rs-launch"
-                          disabled={!s.cwd}
-                          title={
-                            s.cwd ? `在 ${s.cwd} 启动 Claude` : "该会话无目录信息"
-                          }
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            launchAt(s);
-                          }}
-                        >
-                          ▶ 在此启动
-                        </button>
-                      </div>
+                      )}
+                      <span className="rs-group-name">{g.label}</span>
+                      <span className="rs-group-count">{g.items.length}</span>
+                      {g.cwd && (
+                        <span className="rs-group-path" title={g.cwd}>
+                          {g.cwd}
+                        </span>
+                      )}
                     </div>
-                    {expanded === s.file && (
-                      <div className="rs-detail">
-                        {tailLoading ? (
-                          <p className="rs-loading">加载消息…</p>
-                        ) : tail.length === 0 ? (
-                          <p className="rs-loading">没有可显示的对话消息</p>
-                        ) : (
-                          tail.map((m, i) => (
-                            <div key={i} className={`rs-msg ${m.role}`}>
-                              <div className="rs-role">
-                                {m.role === "user" ? "🧑 你" : "🤖 Claude"}
-                              </div>
-                              <div className="rs-text">
-                                <Markdown>
-                                  {m.text.length > 1500
-                                    ? m.text.slice(0, 1500) + " …（略）"
-                                    : m.text}
-                                </Markdown>
-                              </div>
-                            </div>
-                          ))
+                    {!collapsedGroups.has(g.key) && (
+                      <ul className="rs-list rs-group-list">
+                        {g.items.map((s) =>
+                          renderRow(s, `grp:${s.file}`, false)
                         )}
-                      </div>
+                      </ul>
                     )}
-                  </li>
+                  </div>
                 ))}
-              </ul>
+              </section>
               {recent.length >= recentLimit && (
                 <div className="rs-more">
                   <button

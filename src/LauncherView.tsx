@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import WarmupScheduler from "./WarmupScheduler";
 
 // ClaudeDeck 自有配置：%APPDATA%\ClaudeDeck\launcher.json，独立存储。
 
@@ -243,6 +244,9 @@ export default function LauncherView() {
           macOS：用 Terminal.app 新窗口 <code>cd</code> 到目录后起 claude。
         </p>
       </div>
+
+      <div className="lc-divider" />
+      <WarmupScheduler />
     </div>
   );
 }
