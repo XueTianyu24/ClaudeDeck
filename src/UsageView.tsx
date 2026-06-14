@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { CostTrendChart, ModelCostDonut } from "./UsageCharts";
+import { fmtCost, fmtTokens, shortModel } from "./usageFormat";
 
 // 与后端 usage.rs 的 Serialize 结构对应
 type SessionUsage = {
@@ -61,25 +63,6 @@ type UsageReport = {
   scanned_files: number;
   unpriced_models: string[];
 };
-
-/** token 数：>=1M → 1.23M，>=1K → 12.3K，否则原值。 */
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return `${n}`;
-}
-
-/** 费用：>=1 两位小数，<1 四位小数（小额也看得清）。 */
-function fmtCost(n: number): string {
-  if (n === 0) return "$0";
-  if (n >= 1) return `$${n.toFixed(2)}`;
-  return `$${n.toFixed(4)}`;
-}
-
-/** 模型名简写：去 claude- 前缀，opus-4-8 这种留核心。 */
-function shortModel(m: string): string {
-  return m.replace(/^claude-/, "");
-}
 
 function fmtDate(ts: string | null): string {
   if (!ts) return "";
@@ -376,6 +359,7 @@ export default function UsageView() {
           </div>
           <span className="usage-period-count">{periodRows.length} 个周期</span>
         </div>
+        <CostTrendChart rows={periodRows} period={period} />
         {periodRows.length === 0 ? (
           <div className="usage-period-empty">无带时间戳的用量记录</div>
         ) : (
@@ -426,9 +410,11 @@ export default function UsageView() {
         />
       </div>
 
-      {/* 按模型分组 */}
+      {/* 按模型分组：环形占比图 + 横条明细 */}
       {r.by_model.length > 0 && (
-        <div className="usage-models">
+        <div className="usage-models-section">
+          <ModelCostDonut models={r.by_model} />
+          <div className="usage-models">
           {r.by_model.map((m) => (
             <div className="usage-model-row" key={m.model}>
               <span className="usage-model-name mono" title={m.model}>
@@ -445,6 +431,7 @@ export default function UsageView() {
               <span className="usage-model-cost">{fmtCost(m.cost)}</span>
             </div>
           ))}
+          </div>
         </div>
       )}
 
