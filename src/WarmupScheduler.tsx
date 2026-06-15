@@ -190,6 +190,16 @@ export default function WarmupScheduler() {
       {err && <div className="banner err">{err}</div>}
       {msg && <div className="banner ok">{msg}</div>}
 
+      {/* 总开关关着却已配触发点 → 醒目提示，避免「以为开了其实没开」 */}
+      {!cfg.enabled && cfg.triggers.length > 0 && (
+        <div className="ws-warn">
+          ⚠️ 定时已停用，下面的触发点都不会触发。
+          <button className="lc-btn" onClick={() => setEnabled(true)}>
+            点此启用
+          </button>
+        </div>
+      )}
+
       {/* 触发点列表 */}
       {cfg.triggers.length === 0 ? (
         <div className="ws-empty">还没有触发点，在下面添加一个</div>

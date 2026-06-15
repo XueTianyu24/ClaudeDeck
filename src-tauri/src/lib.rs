@@ -2259,6 +2259,9 @@ fn schedule_add_trigger(time: String, days: Vec<u8>) -> Result<ScheduleConfig, S
     if cfg.triggers.iter().any(|x| x.time == t && x.days == days) {
         return Err("已存在相同时间与星期的触发点".into());
     }
+    // 添加「第一个」触发点时自动打开总开关——否则用户加了触发点却忘了开总开关，
+    // 定时永远不触发（曹少 2026-06-15 踩过：总开关默认关，4 个触发点全不生效）。
+    let was_empty = cfg.triggers.is_empty();
     let id = format!("{}-{}", t.replace(':', ""), now_ms());
     cfg.triggers.push(WarmupTrigger {
         id,
@@ -2267,6 +2270,9 @@ fn schedule_add_trigger(time: String, days: Vec<u8>) -> Result<ScheduleConfig, S
         enabled: true,
     });
     cfg.triggers.sort_by(|a, b| a.time.cmp(&b.time));
+    if was_empty {
+        cfg.enabled = true;
+    }
     save_schedule_config(&cfg)?;
     Ok(cfg)
 }

@@ -1700,6 +1700,22 @@ tr.muted {
   font-size: 12.5px;
   padding: 6px 0;
 }
+.ws-warn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: rgba(240, 173, 78, 0.12);
+  border: 1px solid rgba(240, 173, 78, 0.45);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12.5px;
+  margin-bottom: 10px;
+}
+.ws-warn .lc-btn {
+  margin-left: auto;
+}
 .ws-list {
   list-style: none;
   margin: 0;
