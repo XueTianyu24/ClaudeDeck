@@ -17,7 +17,9 @@
 
 ## 平台
 
-目前仅在 **Windows 11** 实测。macOS / Linux 理论可用（Tauri 跨平台），但 `~/.claude/` 路径编码规则尚未在这两个平台验证。
+- **Windows 11**：实测可用，有免安装 exe / 安装包。
+- **macOS**：已按平台分支适配——启动器走 `Terminal.app`（osascript）、手机推送 hook 走 bash 脚本、打开目录走 Finder、项目名从会话 `cwd` 跨平台解析、代理前置命令用 bash 语法、自动化权限声明已内置。需在 **Mac 本机**编译（Tauri 不支持从 Windows 交叉打包 `.app`），见 **[docs/macos-build.md](docs/macos-build.md)**。
+- **Linux**：核心数据源跨平台通用，启动器尽力适配常见终端模拟器，未充分实测。
 
 ## 下载使用（免安装）
 

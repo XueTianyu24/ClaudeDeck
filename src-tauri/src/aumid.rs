@@ -3,7 +3,10 @@
 //! 绑到同一个 AUMID。AUMID 必须等于 tauri.conf.json 的 identifier。
 //! （安装版由安装器自动注册，本函数只为免安装 / dev 场景补这一步。）
 
+// 非 Windows 下调用点（run() 里）被 `#[cfg(windows)]` 整段排除，此 stub 无人调用，
+// 加 allow 抑制 dead_code 告警，保持 macOS / Linux 编译零警告。
 #[cfg(not(windows))]
+#[allow(dead_code)]
 pub fn ensure_aumid_shortcut(
     _app_id: &str,
     _display_name: &str,

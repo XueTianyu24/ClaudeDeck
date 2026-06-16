@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 启动器用 osascript 控制「终端」在所选目录开新 Claude 会话；现代 macOS 需此用途说明，
+	     否则自动化(Apple Events)权限会被静默拒绝、启动器无反应。Tauri 打包时会并入 .app 的 Info.plist。 -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>ClaudeDeck 需要控制「终端」App，以便在你选择的项目目录中打开新的 Claude Code 会话。</string>
+</dict>
+</plist>

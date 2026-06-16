@@ -13,8 +13,12 @@ type LauncherConfig = {
   use_wt: boolean;
 };
 
-const DEFAULT_PRE_CMD =
+// 「重置」按钮用的默认前置命令，按平台给：Windows = PowerShell，macOS/Linux = bash export。
+// 与后端 LAUNCHER_DEFAULT_PRE_CMD 保持一致。
+const DEFAULT_PRE_CMD_WIN =
   '$env:HTTP_PROXY = "http://127.0.0.1:7897"\r\n$env:HTTPS_PROXY = "http://127.0.0.1:7897"\r\n$env:ALL_PROXY = "http://127.0.0.1:7897"';
+const DEFAULT_PRE_CMD_UNIX =
+  "export HTTP_PROXY=http://127.0.0.1:7897\nexport HTTPS_PROXY=http://127.0.0.1:7897\nexport ALL_PROXY=http://127.0.0.1:7897";
 
 // last_opened_at 是 unix 秒
 function fmtAgo(secs: number): string {
@@ -39,6 +43,13 @@ export default function LauncherView() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [os, setOs] = useState<string>("");
+
+  useEffect(() => {
+    invoke<string>("get_platform").then(setOs).catch(() => {});
+  }, []);
+  const isWindows = os === "windows";
+  const defaultPreCmd = isWindows ? DEFAULT_PRE_CMD_WIN : DEFAULT_PRE_CMD_UNIX;
 
   async function reload() {
     try {
@@ -201,14 +212,16 @@ export default function LauncherView() {
       )}
 
       <div className="lc-precmd">
-        <label className="lc-check">
-          <input
-            type="checkbox"
-            checked={cfg.use_wt}
-            onChange={(e) => saveUseWt(e.target.checked)}
-          />
-          在 Windows Terminal 中打开（所有会话集中到一个专属「ClaudeDeck」窗口的多个 tab，免手动切窗口；未装 WT 自动退回独立窗口）
-        </label>
+        {isWindows && (
+          <label className="lc-check">
+            <input
+              type="checkbox"
+              checked={cfg.use_wt}
+              onChange={(e) => saveUseWt(e.target.checked)}
+            />
+            在 Windows Terminal 中打开（所有会话集中到一个专属「ClaudeDeck」窗口的多个 tab，免手动切窗口；未装 WT 自动退回独立窗口）
+          </label>
+        )}
         <label className="lc-check">
           <input
             type="checkbox"
@@ -231,17 +244,25 @@ export default function LauncherView() {
           />
           <button
             className="lc-btn"
-            onClick={() => savePrecmd({ pre_cmd: DEFAULT_PRE_CMD })}
+            onClick={() => savePrecmd({ pre_cmd: defaultPreCmd })}
           >
             重置
           </button>
         </div>
         <p className="lc-hint">
-          Windows：默认把所有会话开进一个专属「ClaudeDeck」窗口的新 tab
-          （<code>wt -w ClaudeDeck new-tab</code>，没有就建、有就往里加），自动切到项目目录
-          + 注入上面的代理命令 + 起 claude——和你其他 WT 窗口隔离，不用再手动切窗口。
-          关掉则退回独立窗口（<code>powershell -NoExit</code> / <code>cmd /k claude</code>）；
-          macOS：用 Terminal.app 新窗口 <code>cd</code> 到目录后起 claude。
+          {isWindows ? (
+            <>
+              Windows：默认把所有会话开进一个专属「ClaudeDeck」窗口的新 tab
+              （<code>wt -w ClaudeDeck new-tab</code>，没有就建、有就往里加），自动切到项目目录
+              + 注入上面的代理命令 + 起 claude——和你其他 WT 窗口隔离，不用再手动切窗口。
+              关掉则退回独立窗口（<code>powershell -NoExit</code> / <code>cmd /k claude</code>）。
+            </>
+          ) : (
+            <>
+              macOS：用 <code>Terminal.app</code> 开新窗口，<code>cd</code> 到所选目录后（可选注入上面的
+              代理命令）起 claude。首次启动时系统会弹「ClaudeDeck 想要控制『终端』」的自动化授权，点允许即可。
+            </>
+          )}
         </p>
       </div>
 

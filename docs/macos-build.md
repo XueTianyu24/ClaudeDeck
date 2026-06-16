@@ -52,6 +52,13 @@ npm run tauri build
 | 打开 skill 目录 | 资源管理器 | Finder（`open`） |
 | 启动器配置目录 | `%APPDATA%\ClaudeDeck` | `~/Library/Application Support/ClaudeDeck` |
 
-## 五、已知待验证项
+## 五、实测状态（Apple Silicon / macOS 26）
 
-macOS 适配代码无法在 Windows 上交叉编译验证，首次在 Mac 上 build 时如遇编译错误或运行问题，请反馈，会快速修。重点验证：会话监控刷新、桌面通知 + 提示音、记忆 / 技能 / 用量三视图、启动器开 Terminal、手机推送一键安装与实际收推。
+已在 M 系 Mac 本机实测通过：
+
+- ✅ `cargo build` / `npm run tauri dev` 编译启动无报错、无 panic（仅需 CLT + rustup，详见第一节）。
+- ✅ 会话监控列表、记忆 / 技能 / 用量三视图正常；记忆项目名从会话 `cwd` 解析为友好名（不再是编码后的 `-Users-…-` 长串）。
+- ✅ 启动器点「启动」→ 弹「控制『终端』」自动化授权 → Terminal.app 新窗口 `cd` 到目录起 claude；勾选 bash 代理前置命令（多行 export）也正常，不再触发 AppleScript 换行语法错。
+- ✅ 桌面通知实测有效：「⏳ 等待你的输入」与「✅ 任务完成（带用时）」均主动弹出，完成通知伴 Web Audio 提示音。前提是首次在「系统设置 → 通知 → ClaudeDeck」授权，并把「提醒样式」设为「横幅」或「提醒」（默认可能只进通知中心、不主动弹）。
+
+待用户按需实测：手机推送 hook（Bark / PushPlus）一键安装与真机收推。如遇问题请反馈。

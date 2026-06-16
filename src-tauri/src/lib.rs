@@ -301,6 +301,12 @@ fn curl_available() -> bool {
         .unwrap_or(false)
 }
 
+/// 当前操作系统标识：`windows` / `macos` / `linux`（前端按平台分支 UI / 默认命令用）。
+#[tauri::command]
+fn get_platform() -> String {
+    std::env::consts::OS.to_string()
+}
+
 #[tauri::command]
 fn get_env_status() -> EnvStatus {
     let home = dirs::home_dir();
@@ -1034,16 +1040,46 @@ fn projects_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude").join("projects"))
 }
 
-/// 从编码目录名尽力反推友好名：取 `Desktop-` 之后的部分，否则原样。
-/// 编码规则有歧义（项目名本身含 `-` 时无法可靠还原），故仅作显示美化。
+/// 从编码目录名尽力反推友好名：取最后一个常见容器目录（Desktop / Documents / …）
+/// 之后的部分，否则原样。编码规则有歧义（`/`、`.`、`@` 等都被压成 `-`，项目名本身
+/// 含 `-` 时无法可靠还原），故仅作**兜底**显示美化——优先用 `cwd_from_project_dir`
+/// 读真实 cwd（权威、跨平台），这里只在读不到 jsonl 时用。
 fn decode_project_label(dir: &str) -> String {
-    if let Some(idx) = dir.find("Desktop-") {
-        let tail = &dir[idx + "Desktop-".len()..];
-        if !tail.is_empty() {
-            return tail.to_string();
+    // 跨平台：Win 路径含 `Desktop-` / `Documents-`，mac/Linux 同样常见这两个。
+    for marker in [
+        "Desktop-",
+        "Documents-",
+        "Projects-",
+        "projects-",
+        "repos-",
+        "Code-",
+        "code-",
+        "src-",
+    ] {
+        if let Some(idx) = dir.rfind(marker) {
+            let tail = &dir[idx + marker.len()..];
+            if !tail.is_empty() {
+                return tail.to_string();
+            }
         }
     }
     dir.to_string()
+}
+
+/// 从项目目录里任一 transcript（`*.jsonl`）读出真实 `cwd`。
+/// 这是**权威且跨平台**的项目名来源（编码目录名是有损的，无法可靠反推）——
+/// `~/.claude/projects/<编码>/` 下既有会话 jsonl 也有 memory/，读 jsonl 头即可拿到原始路径。
+fn cwd_from_project_dir(dir: &Path) -> Option<String> {
+    let rd = fs::read_dir(dir).ok()?;
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+            if let Some(c) = find_cwd(&read_head_lines(&p, 40)) {
+                return Some(c);
+            }
+        }
+    }
+    None
 }
 
 /// 统计某 memory 目录下的记忆文件数（排除 MEMORY.md 索引）。
@@ -1089,7 +1125,11 @@ fn list_memory_projects() -> Result<Vec<MemoryProject>, String> {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
-        let label = decode_project_label(&dir);
+        // 优先读真实 cwd 取末段做友好名（跨平台、无歧义）；读不到再退回编码名兜底反推。
+        let label = cwd_from_project_dir(&path)
+            .as_deref()
+            .and_then(project_from_cwd)
+            .unwrap_or_else(|| decode_project_label(&dir));
         out.push(MemoryProject {
             dir,
             label,
@@ -2232,9 +2272,13 @@ fn spawn_claude(
 ) -> Result<(), String> {
     // use_wt 是 Windows Terminal 专属，macOS 忽略。
     // 用 Terminal.app 开新窗口：cd 到目录后（可选前置命令）跑 claude / claude --resume。
+    // 关键：pre_cmd 默认是多行（代理 export 各占一行），但 AppleScript 字符串字面量
+    // **不能含裸换行**，否则 `do script "..."` 直接语法报错、启动器静默失败。
+    // 故把换行压成 `; `（这些前置命令本就是顺序执行的独立语句）。
     let cc = claude_cmd(resume_id);
-    let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-        format!("cd {} && {} ; {}", sh_quote(dir), pre_cmd.trim(), cc)
+    let pre = pre_cmd.trim().replace('\r', "").replace('\n', " ; ");
+    let inner = if pre_cmd_enabled && !pre.is_empty() {
+        format!("cd {} && {} ; {}", sh_quote(dir), pre, cc)
     } else {
         format!("cd {} && {}", sh_quote(dir), cc)
     };
@@ -3492,6 +3536,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_sessions,
             get_env_status,
+            get_platform,
             check_for_update,
             start_update_download,
             update_download_progress,
