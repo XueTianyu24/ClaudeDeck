@@ -2934,6 +2934,12 @@ pub fn run() {
     let close_to_tray = Arc::new(AtomicBool::new(true));
 
     tauri::Builder::default()
+        // 单实例：再次启动（双击图标 / 命令行）不开新窗口，把已运行实例唤回置前。
+        // 必须作为第一个注册的插件才稳定生效。本 app 关窗/自启都会藏托盘，
+        // 第二次启动正好等价于「从后台把它叫出来」。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())

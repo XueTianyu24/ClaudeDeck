@@ -1,6 +1,6 @@
 [package]
 name = "claudedeck"
-version = "0.9.6"
+version = "0.9.7"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -33,6 +33,7 @@ dirs = "5"
 sysinfo = "0.33"
 chrono = "0.4"
 tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 
 # 免安装 / dev 场景注册 AppUserModelID，让 toast 通知来源显示 ClaudeDeck 而非 PowerShell
 [target.'cfg(windows)'.dependencies]

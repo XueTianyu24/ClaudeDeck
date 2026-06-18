@@ -480,7 +480,7 @@ dependencies = [
 
 [[package]]
 name = "claudedeck"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -493,6 +493,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
  "windows 0.62.2",
 ]
 
@@ -3777,6 +3778,21 @@ dependencies = [
  "thiserror 2.0.18",
  "url",
  "windows 0.61.3",
+ "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-single-instance"
+version = "2.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c8f29386f5e9fdc699182388a33ee80a56de436d91b67459e86afef426282af"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-sys 0.60.2",
  "zbus",
 ]
 
