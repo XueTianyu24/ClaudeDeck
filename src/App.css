@@ -1716,6 +1716,128 @@ tr.muted {
 .ws-warn .lc-btn {
   margin-left: auto;
 }
+/* 官方云端 Routines 引导卡片（免在线替代方案，低调蓝色信息卡） */
+.ws-routines {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 7%, transparent);
+}
+.ws-routines-txt {
+  flex: 1 1 280px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.ws-routines-btns {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ws-routines-btns .lc-btn {
+  white-space: nowrap;
+}
+
+/* 添加教程弹层（居中 modal） */
+.ws-guide-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.ws-guide {
+  width: min(560px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 22px 20px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.ws-guide-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.ws-guide-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.ws-guide-x {
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.ws-guide-x:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.ws-guide-intro {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--dim);
+  margin: 0 0 14px;
+}
+.ws-guide-sec {
+  margin-bottom: 14px;
+}
+.ws-guide-sec h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: var(--blue);
+}
+.ws-guide-sec ol {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-guide-sec li {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.ws-guide code {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+.ws-guide-tip {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--dim);
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin: 0 0 16px;
+}
+.ws-guide-foot {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
 .ws-list {
   list-style: none;
   margin: 0;
@@ -2335,6 +2457,26 @@ tr.muted {
   font-size: 12px;
   white-space: nowrap;
 }
+.rs-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.rs-size {
+  font-size: 11.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.rs-cost {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+  padding: 1px 7px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
 .rs-launch {
   border: 1px solid var(--border);
   background: var(--panel-2);
@@ -2352,6 +2494,36 @@ tr.muted {
 .rs-launch:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* 删除按钮：默认低调垃圾桶图标，进入确认态变红描边，高风险确认态实心红警示 */
+.rs-del {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--dim);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rs-del:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
+}
+.rs-del:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.rs-del.confirm {
+  border-color: var(--red);
+  color: var(--red);
+  font-weight: 600;
+}
+.rs-del.danger {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
 }
 .rs-detail {
   border-top: 1px dashed var(--border);

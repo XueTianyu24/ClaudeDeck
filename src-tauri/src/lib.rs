@@ -448,6 +448,8 @@ struct RecentSession {
     last_prompt: Option<String>,
     /// 最后活跃时间（文件 mtime，unix ms）
     last_active_ms: i64,
+    /// jsonl 文件大小（字节）
+    size_bytes: u64,
     /// 当前是否有活进程（交叉 sessions/*.json）
     running: bool,
 }
@@ -541,8 +543,8 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
         .filter_map(|s| s.session_id)
         .collect();
 
-    // 收集所有 jsonl 的 (路径, mtime)。
-    let mut files: Vec<(PathBuf, i64)> = Vec::new();
+    // 收集所有 jsonl 的 (路径, mtime, 字节大小)。
+    let mut files: Vec<(PathBuf, i64, u64)> = Vec::new();
     for proj in fs::read_dir(&root)
         .map_err(|e| format!("读取 projects 目录失败: {e}"))?
         .flatten()
@@ -557,14 +559,15 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
                 if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
                     continue;
                 }
-                let mt = f
-                    .metadata()
-                    .ok()
+                let meta = f.metadata().ok();
+                let mt = meta
+                    .as_ref()
                     .and_then(|m| m.modified().ok())
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| d.as_millis() as i64)
                     .unwrap_or(0);
-                files.push((p, mt));
+                let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+                files.push((p, mt, size));
             }
         }
     }
@@ -574,7 +577,7 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
     files.truncate(cap);
 
     let mut out = Vec::new();
-    for (path, mt) in files {
+    for (path, mt, size) in files {
         let head = read_head_lines(&path, 40);
         let tail = read_tail_lines(&path, 64 * 1024);
         let cwd = find_cwd(&head).or_else(|| find_cwd(&tail));
@@ -597,6 +600,7 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
             title,
             last_prompt,
             last_active_ms: mt,
+            size_bytes: size,
             running,
         });
     }
@@ -681,6 +685,22 @@ fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>
     }
     let start = msgs.len().saturating_sub(n);
     Ok(msgs.split_off(start))
+}
+
+/// 删除单个会话记录文件（jsonl）。物理删除、不可恢复，前端负责二次确认。
+/// 安全：仅允许 projects 目录内的 .jsonl，挡路径穿越。
+#[tauri::command]
+fn delete_session(file: String) -> Result<(), String> {
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    let path = PathBuf::from(&file);
+    if path.extension().and_then(|s| s.to_str()) != Some("jsonl") || !path.starts_with(&root) {
+        return Err("非法的会话文件路径".into());
+    }
+    if !path.exists() {
+        return Err("会话文件不存在（可能已被删除）".into());
+    }
+    fs::remove_file(&path).map_err(|e| format!("删除会话失败: {e}"))?;
+    Ok(())
 }
 
 // ── 记忆可视化 ────────────────────────────────────────────────
@@ -3061,7 +3081,9 @@ pub fn run() {
             test_phone_push,
             list_recent_sessions,
             read_session_tail,
-            usage::list_token_usage
+            delete_session,
+            usage::list_token_usage,
+            usage::list_session_costs
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

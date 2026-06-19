@@ -14,6 +14,7 @@ import SkillView from "./SkillView";
 import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
 import Markdown from "./Markdown";
+import { fmtBytes, fmtCost, fmtTokens } from "./usageFormat";
 
 type Session = {
   pid: number | null;
@@ -162,9 +163,18 @@ type RecentSession = {
   title: string | null;
   last_prompt: string | null;
   last_active_ms: number;
+  size_bytes: number;
   running: boolean;
 };
 type SessionMsg = { role: string; text: string; timestamp: string | null };
+// 单会话成本（list_session_costs 返回，按 session_id 合并到会话行）
+type SessionCost = {
+  session_id: string;
+  cost: number;
+  message_count: number;
+  total_tokens: number;
+  has_unpriced: boolean;
+};
 
 // 检查更新（后端 check_for_update 返回）
 type UpdateInfo = {
@@ -200,6 +210,12 @@ function App() {
   const [tailLoading, setTailLoading] = useState(false);
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set()); // 折叠的项目分组 key
+  // 单会话成本（session_id → SessionCost）。全量解析较重，故不进 3s 轮询，
+  // 只在进入会话页 / 手动刷新时拉一次。
+  const [costMap, setCostMap] = useState<Map<string, SessionCost>>(new Map());
+  // 待二次确认删除的会话行 key（防误触：先点一次进入确认态，再点才真删）。
+  const [confirmDel, setConfirmDel] = useState<string | null>(null);
+  const delTimer = useRef<number | null>(null);
 
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
@@ -291,8 +307,20 @@ function App() {
       setRecentLoading(false);
     }
   }
+  // 成本全量解析较重，单独拉、不进 3s 轮询；失败静默（成本只是会话行的附属信息）。
+  async function loadCosts() {
+    try {
+      const list = await invoke<SessionCost[]>("list_session_costs");
+      setCostMap(new Map(list.map((c) => [c.session_id, c])));
+    } catch {
+      /* 忽略：成本列不显示即可 */
+    }
+  }
   useEffect(() => {
-    if (view === "sessions") loadRecent();
+    if (view === "sessions") {
+      loadRecent();
+      loadCosts();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
@@ -397,6 +425,28 @@ function App() {
             )}
           </div>
           <div className="rs-right">
+            <div className="rs-stats">
+              <span className="rs-size" title="会话记录文件大小">
+                {fmtBytes(s.size_bytes)}
+              </span>
+              {(() => {
+                const c = costMap.get(s.session_id);
+                if (!c) return null;
+                return (
+                  <span
+                    className="rs-cost"
+                    title={`${c.message_count} 条 assistant 消息 · ${fmtTokens(
+                      c.total_tokens
+                    )} tokens${
+                      c.has_unpriced ? " · 含未定价模型，成本偏低" : ""
+                    }`}
+                  >
+                    {fmtCost(c.cost)}
+                    {c.has_unpriced ? "+" : ""}
+                  </span>
+                );
+              })()}
+            </div>
             <span className="rs-ago">{fmtIdle(Date.now() - s.last_active_ms)}</span>
             <button
               className="rs-launch"
@@ -409,6 +459,40 @@ function App() {
             >
               ▶ 在此启动
             </button>
+            {(() => {
+              const arming = confirmDel === rowKey;
+              // 高风险：最后活跃 < 7 天 且 文件 > 1MB（近期还在用、内容多，误删损失大）。
+              const highRisk =
+                Date.now() - s.last_active_ms < 7 * 24 * 3600 * 1000 &&
+                s.size_bytes > 1024 * 1024;
+              return (
+                <button
+                  className={`rs-del${arming ? " confirm" : ""}${
+                    arming && highRisk ? " danger" : ""
+                  }`}
+                  disabled={s.running}
+                  title={
+                    s.running
+                      ? "运行中的会话不可删除"
+                      : arming
+                      ? highRisk
+                        ? "⚠️ 高风险：该会话近 7 天活跃且体积 >1MB，删除不可恢复 — 再次点击确认"
+                        : "删除不可恢复 — 再次点击确认"
+                      : "删除该会话记录文件"
+                  }
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deleteSessionRow(s, rowKey);
+                  }}
+                >
+                  {arming
+                    ? highRisk
+                      ? "⚠️ 确认删除"
+                      : "确认删除"
+                    : "🗑"}
+                </button>
+              );
+            })()}
           </div>
         </div>
         {expanded === rowKey && (
@@ -452,6 +536,31 @@ function App() {
       loadRecent();
     } catch (e) {
       flashLaunch("❌ " + String(e));
+    }
+  }
+
+  // 删除会话：第一次点击进入确认态（4 秒后自动撤销），第二次点击才真删。
+  async function deleteSessionRow(s: RecentSession, rowKey: string) {
+    if (confirmDel !== rowKey) {
+      setConfirmDel(rowKey);
+      if (delTimer.current) window.clearTimeout(delTimer.current);
+      delTimer.current = window.setTimeout(() => setConfirmDel(null), 4000);
+      return;
+    }
+    // 已是确认态 → 执行删除
+    if (delTimer.current) window.clearTimeout(delTimer.current);
+    setConfirmDel(null);
+    try {
+      await invoke("delete_session", { file: s.file });
+      if (expanded === rowKey) {
+        setExpanded(null);
+        setTail([]);
+      }
+      flashLaunch(`🗑 已删除会话：${s.title || s.last_prompt || s.session_id}`);
+      loadRecent();
+      loadCosts();
+    } catch (e) {
+      flashLaunch("❌ 删除失败：" + String(e));
     }
   }
 
@@ -917,7 +1026,14 @@ function App() {
             <span className="recent-hint">
               最近 5 个会话 + 按项目目录分组 — 点开看最后几条消息，▶ 在原目录重新打开
             </span>
-            <button className="refresh" onClick={() => loadRecent()} title="刷新">
+            <button
+              className="refresh"
+              onClick={() => {
+                loadRecent();
+                loadCosts();
+              }}
+              title="刷新"
+            >
               ↻
             </button>
           </div>

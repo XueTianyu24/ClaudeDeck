@@ -5,6 +5,21 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.8] - 2026-06-18
+
+### 新增
+- **会话监控页：每个会话显示「文件大小」和「累计花费」**。会话行右侧新增两枚信息——记录文件大小（KB/MB）+ 该会话累计 token 花费（绿色高亮），鼠标悬停花费可看 assistant 消息条数与 token 总数；含无法定价模型的会话花费标 `+`（成本偏低估）。
+  - **性能**：花费需全量解析所有 jsonl 的 token 用量（与「用量计费」页同源、复用 `build_report`），开销较大，故**不进 3s 轮询**——仅在进入会话页 / 点刷新时拉一次，避免拖慢监控页。文件大小则几乎零成本（扫文件时本就读 metadata）。
+  - 关键改动：`src-tauri/src/lib.rs`（`RecentSession` 加 `size_bytes`）、`src-tauri/src/usage.rs`（新增 `list_session_costs` 命令，按 session_id 回精简成本）、`src/App.tsx`（会话行渲染 + 成本按需拉取）、`src/usageFormat.ts`（加 `fmtBytes`）。
+- **会话监控页：单个会话删除（二次确认 + 高风险提示）**。每行新增 🗑 删除按钮，删除会话记录文件（jsonl）。
+  - **防误触**：需点两次——第一次进入「确认删除」态（红色，4 秒后自动撤销），第二次才真删。
+  - **高风险提示**：当会话「最后活跃 < 7 天」**且**「文件 > 1MB」时（近期还在用、内容多，误删损失大），确认态按钮变实心红 + 文案标「⚠️ 高风险，删除不可恢复」。
+  - 运行中的会话禁止删除（避免删正在写入的文件）。删除为物理删除、不可恢复。
+  - 关键改动：`src-tauri/src/lib.rs`（新增 `delete_session` 命令，路径校验防穿越）、`src/App.tsx`（删除按钮 + 二次确认状态机 + 高风险判定）。
+- **定时开窗：补充官方云端 Routines 引导（免电脑在线的替代方案）**。本地定时开窗要求电脑到点在线；经实测确认，Anthropic 官方「Routines」可在云端按计划定时开窗、会触发账号的 5 小时窗口、全程无需本机运行。故在「定时开窗」面板底部新增一张引导卡片，说明该替代方案并提供「前往配置」按钮（跳转 `claude.ai/code/routines`，需 Pro/Max/Team 等订阅并启用 Claude Code on the web）。本地方案保留作兜底，二者按需二选一。
+  - 引导卡片还带「📖 添加教程」按钮，点开弹出**居中教程弹层**，图文列出两种添加方式：① 网页 `claude.ai/code/routines` 新建（选 Daily + 本地时间，自动转换、无需手写 cron）；② CLI `/schedule` 一句话创建。
+  - 关键改动：`src/WarmupScheduler.tsx`（引导卡片 + 教程弹层 + `openUrl` 跳转）、`src/App.css`（`.ws-routines` / `.ws-guide` 样式）。
+
 ## [0.9.7] - 2026-06-18
 
 ### 修复

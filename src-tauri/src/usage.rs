@@ -635,6 +635,34 @@ pub(crate) fn list_token_usage() -> Result<UsageReport, String> {
     build_report()
 }
 
+/// 会话监控页用的精简单会话成本（按 session_id 索引）。
+/// 与完整用量报告同源（build_report 全量解析），但只回必要字段，前端按 session_id 合并到会话行。
+#[derive(Debug, Serialize)]
+pub(crate) struct SessionCost {
+    session_id: String,
+    cost: f64,
+    message_count: u64,
+    total_tokens: u64,
+    /// 含无法定价的模型 → 成本被低估（前端可加提示）
+    has_unpriced: bool,
+}
+
+#[tauri::command]
+pub(crate) fn list_session_costs() -> Result<Vec<SessionCost>, String> {
+    let report = build_report()?;
+    Ok(report
+        .sessions
+        .into_iter()
+        .map(|s| SessionCost {
+            session_id: s.session_id,
+            cost: s.cost,
+            message_count: s.message_count,
+            total_tokens: s.total_tokens,
+            has_unpriced: s.has_unpriced,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -18,3 +18,10 @@ export function fmtCost(n: number): string {
 export function shortModel(m: string): string {
   return m.replace(/^claude-/, "");
 }
+
+/** 文件大小：>=1MB → 12.3MB，>=1KB → 45KB，否则 N B。 */
+export function fmtBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)}KB`;
+  return `${n} B`;
+}
