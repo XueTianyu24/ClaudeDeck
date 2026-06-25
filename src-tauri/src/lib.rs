@@ -339,6 +339,12 @@ struct UpdateInfo {
     url: String,
     /// 发布时间（ISO8601）
     published_at: String,
+    /// Windows 安装包（`-setup.exe`）直链；无则 None（一键下载安装用）
+    installer_url: Option<String>,
+    /// 安装包文件名（落盘临时文件名用）
+    installer_name: Option<String>,
+    /// 安装包字节大小（进度条算百分比用；未知为 0）
+    installer_size: u64,
 }
 
 /// 朴素版本号比较：`a > b` 返回 true。按 `.` 分段比较数字部分，缺位补 0，
@@ -414,6 +420,28 @@ fn check_for_update() -> Result<UpdateInfo, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // 找 Windows 安装包资产（NSIS `-setup.exe`），供「一键下载安装」用。
+    let mut installer_url = None;
+    let mut installer_name = None;
+    let mut installer_size = 0u64;
+    if let Some(assets) = json.get("assets").and_then(|v| v.as_array()) {
+        if let Some(a) = assets.iter().find(|a| {
+            a.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n.ends_with("-setup.exe"))
+                .unwrap_or(false)
+        }) {
+            installer_url = a
+                .get("browser_download_url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            installer_name = a
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            installer_size = a.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        }
+    }
     let has_update = version_gt(&latest, &current);
     Ok(UpdateInfo {
         current,
@@ -422,7 +450,138 @@ fn check_for_update() -> Result<UpdateInfo, String> {
         notes,
         url,
         published_at,
+        installer_url,
+        installer_name,
+        installer_size,
     })
+}
+
+// ── 自动更新：下载 + 安装（Windows）─────────────────────────────
+// 轻量自实现（不引签名密钥 / latest.json）：curl 下载 GitHub release 的 `-setup.exe` 到临时目录，
+// 前端轮询「已下字节 / 总字节」画进度条；下完拉起 NSIS 安装程序（每用户安装、无 UAC、装完默认重启
+// 应用）后退出 app。临时目录符合「下载即用、用完即弃」的管道用途。
+#[derive(Default)]
+struct UpdateDownload {
+    inner: Mutex<Option<DlJob>>,
+}
+struct DlJob {
+    path: PathBuf,
+    total: u64,
+    child: std::process::Child,
+    done: bool,
+    ok: bool,
+    err: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DlProgress {
+    downloaded: u64,
+    total: u64,
+    done: bool,
+    ok: bool,
+    err: Option<String>,
+}
+
+/// 开始下载安装包：起一个 curl 子进程写到临时文件，立即返回；前端轮询进度。
+#[tauri::command]
+fn start_update_download(
+    state: tauri::State<UpdateDownload>,
+    url: String,
+    file_name: String,
+    total: u64,
+) -> Result<(), String> {
+    if url.trim().is_empty() {
+        return Err("下载地址为空".into());
+    }
+    // 安全：文件名只允许安装包基本字符（挡路径穿越），且必须是 .exe。
+    let safe = file_name.trim();
+    if safe.is_empty()
+        || !safe
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        || !safe.ends_with(".exe")
+    {
+        return Err("非法的安装包文件名".into());
+    }
+    let dir = std::env::temp_dir().join("ClaudeDeck-update");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let path = dir.join(safe);
+    let _ = fs::remove_file(&path); // 清掉上次残留，避免旧文件干扰大小判定
+    let child = silent_command(CURL_BIN)
+        .args([
+            "-fL",
+            "--max-time",
+            "300",
+            "-o",
+            path.to_string_lossy().as_ref(),
+            &url,
+        ])
+        .spawn()
+        .map_err(|e| format!("启动下载失败: {e}"))?;
+    *state.inner.lock().unwrap() = Some(DlJob {
+        path,
+        total,
+        child,
+        done: false,
+        ok: false,
+        err: None,
+    });
+    Ok(())
+}
+
+/// 轮询下载进度：已下字节=临时文件当前大小；探测 curl 是否退出及成败。
+#[tauri::command]
+fn update_download_progress(state: tauri::State<UpdateDownload>) -> Result<DlProgress, String> {
+    let mut guard = state.inner.lock().unwrap();
+    let job = guard.as_mut().ok_or("没有进行中的下载")?;
+    let downloaded = fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
+    if !job.done {
+        match job.child.try_wait() {
+            Ok(Some(status)) => {
+                job.done = true;
+                job.ok = status.success();
+                if !status.success() {
+                    job.err = Some("下载失败（网络中断或文件不可用）".into());
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
+                job.done = true;
+                job.ok = false;
+                job.err = Some(format!("下载进程异常: {e}"));
+            }
+        }
+    }
+    Ok(DlProgress {
+        downloaded,
+        total: job.total,
+        done: job.done,
+        ok: job.ok,
+        err: job.err.clone(),
+    })
+}
+
+/// 拉起已下载好的安装程序（独立进程，app 退出后继续运行）。
+#[tauri::command]
+fn run_update_installer(state: tauri::State<UpdateDownload>) -> Result<(), String> {
+    let guard = state.inner.lock().unwrap();
+    let job = guard.as_ref().ok_or("没有已下载的安装包")?;
+    if !job.done || !job.ok {
+        return Err("安装包尚未下载完成".into());
+    }
+    if !job.path.exists() {
+        return Err("安装包文件不存在".into());
+    }
+    Command::new(&job.path)
+        .spawn()
+        .map_err(|e| format!("启动安装程序失败: {e}"))?;
+    Ok(())
+}
+
+/// 退出整个 app（更新前调用，让安装程序能替换文件）。
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 // ── 会话历史（最近会话浏览 + 内容入口）──────────────────────────
@@ -3267,6 +3426,7 @@ pub fn run() {
         ))
         .manage(cfg.clone())
         .manage(close_to_tray.clone())
+        .manage(UpdateDownload::default())
         .setup(move |app| {
             // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
             // app_id 必须 == tauri.conf.json 的 identifier，否则与通知插件用的 AUMID 不一致。
@@ -3333,6 +3493,10 @@ pub fn run() {
             list_sessions,
             get_env_status,
             check_for_update,
+            start_update_download,
+            update_download_progress,
+            run_update_installer,
+            quit_app,
             list_memory_projects,
             list_memories,
             read_global_md,

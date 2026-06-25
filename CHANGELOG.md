@@ -5,6 +5,16 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.12] - 2026-06-26
+
+### 新增 / 优化
+- **自动更新升级为「弹窗 + 一键下载安装」（带进度条）**。原先只是顶部横幅提示「打开下载页」，需用户自己去 GitHub 找资产下载安装；现在发现新版会**自动弹出居中弹窗**（版本号 + 更新说明 + 三个按钮），Windows 用户点「⬇ 立即更新（下载并安装）」即可：
+  - **真实进度条**：用 curl 把 GitHub release 的 `-setup.exe` 下到临时目录，前端按「已下字节 / 总字节」轮询画绿色进度条（不引重依赖，与项目全 curl 风格一致）；下完拉起 NSIS 安装程序（**每用户安装、无 UAC、装完可重启应用**）并退出本应用让其替换文件。
+  - 按钮：`⬇ 立即更新` / `稍后`（本次会话不再弹）/ `忽略此版本`（永久，记 localStorage）；下载中可「取消」；失败退回「打开下载页手动安装」+ 重试。
+  - **边界**：仅 Windows 走一键装（解析 release 资产里的 `-setup.exe`）；其它平台 / 无安装包资产时退回「打开下载页」。**无加密签名校验**（走 HTTPS + 自家 GitHub release，风险低；如需更强可后续上官方 `tauri-plugin-updater`，但需签名密钥 + 每发版生成 latest.json，较重）。
+  - 关键改动：`src-tauri/src/lib.rs`（`check_for_update` 多解析 `-setup.exe` 资产直链/大小；新增 `start_update_download` / `update_download_progress`〔curl 子进程 + 轮询文件大小 + `try_wait` 探测成败〕/ `run_update_installer` / `quit_app`；`UpdateDownload` 托管状态）、`src/UpdateModal.tsx`（新弹窗组件，自管下载/进度/安装流程）、`src/App.tsx`（横幅换弹窗 + 检查逻辑）、`src/App.css`（`.um-*` 弹窗 + 进度条样式）。
+  - ⚠️ 仅 **v0.9.12+** 用户能收到新弹窗；旧版仍是老横幅（无法回溯）。
+
 ## [0.9.11] - 2026-06-26
 
 ### 新增 / 优化
