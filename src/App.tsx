@@ -167,6 +167,17 @@ type RecentSession = {
   size_bytes: number;
   running: boolean;
 };
+// 收藏的会话（后端 favorites_list 返回，running/missing 实时计算）
+type FavoriteView = {
+  session_id: string;
+  file: string;
+  cwd: string | null;
+  project: string | null;
+  title: string | null;
+  added_at: number;
+  running: boolean;
+  missing: boolean;
+};
 type SessionMsg = { role: string; text: string; timestamp: string | null };
 // 单会话成本（list_session_costs 返回，按 session_id 合并到会话行）
 type SessionCost = {
@@ -217,6 +228,8 @@ function App() {
   const [searchResults, setSearchResults] = useState<RecentSession[]>([]);
   const [searching, setSearching] = useState(false);
   const [fullView, setFullView] = useState<RecentSession | null>(null); // 全文查看的会话
+  const [favs, setFavs] = useState<FavoriteView[]>([]); // 收藏的会话
+  const [favCollapsed, setFavCollapsed] = useState(false); // 收藏夹是否折叠
   // 单会话成本（session_id → SessionCost）。全量解析较重，故不进 3s 轮询，
   // 只在进入会话页 / 手动刷新时拉一次。
   const [costMap, setCostMap] = useState<Map<string, SessionCost>>(new Map());
@@ -323,10 +336,19 @@ function App() {
       /* 忽略：成本列不显示即可 */
     }
   }
+  // 收藏夹：切到会话监控 tab 时拉一次；增删后也会重拉。
+  async function loadFavs() {
+    try {
+      setFavs(await invoke<FavoriteView[]>("favorites_list"));
+    } catch {
+      /* 忽略：收藏夹不显示即可 */
+    }
+  }
   useEffect(() => {
     if (view === "sessions") {
       loadRecent();
       loadCosts();
+      loadFavs();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
@@ -387,6 +409,12 @@ function App() {
       return next;
     });
   }
+
+  // 已收藏的 session_id 集合（会话行的 ★/☆ 状态判定）
+  const favSet = useMemo(
+    () => new Set(favs.map((f) => f.session_id)),
+    [favs]
+  );
 
   // 最近 15 个会话（跨项目，纯按活跃时间倒序，不受运行中置顶影响），分页每页 5 个
   const recentTop15 = useMemo(
@@ -495,15 +523,35 @@ function App() {
             </div>
             <span className="rs-ago">{fmtIdle(Date.now() - s.last_active_ms)}</span>
             <button
-              className="rs-launch"
-              disabled={!s.cwd}
-              title={s.cwd ? `在 ${s.cwd} 启动 Claude` : "该会话无目录信息"}
+              className={`rs-fav${favSet.has(s.session_id) ? " on" : ""}`}
+              title={
+                favSet.has(s.session_id)
+                  ? "取消收藏"
+                  : "加入收藏夹（关机后一键续上）"
+              }
               onClick={(e) => {
                 e.stopPropagation();
-                launchAt(s);
+                toggleFav(s);
               }}
             >
-              ▶ 在此启动
+              {favSet.has(s.session_id) ? "★" : "☆"}
+            </button>
+            <button
+              className="rs-launch"
+              disabled={!s.cwd || s.running}
+              title={
+                !s.cwd
+                  ? "该会话无目录信息"
+                  : s.running
+                  ? "运行中的会话已在终端打开，无需继续"
+                  : `续上该会话（claude --resume）`
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                resumeSession(s.cwd, s.session_id, s.project, s.running);
+              }}
+            >
+              ⟳ 一键继续
             </button>
             {(() => {
               const arming = confirmDel === rowKey;
@@ -581,17 +629,109 @@ function App() {
     );
   }
 
+  // 渲染收藏夹里的一条（紧凑行：标题 + 项目 + 一键继续 + 取消收藏）
+  function renderFavRow(f: FavoriteView) {
+    return (
+      <li
+        key={`fav:${f.session_id}`}
+        className={`fav-row${f.missing ? " gone" : ""}`}
+      >
+        <div className="fav-info">
+          <div className="fav-titleline">
+            {f.running && (
+              <span className="badge busy">
+                <i className="dot" />
+                运行中
+              </span>
+            )}
+            <span className="fav-title">{f.title || "（未命名会话）"}</span>
+          </div>
+          <div className="fav-subline" title={f.cwd || ""}>
+            <span className="rs-proj">{f.project || "—"}</span>
+            {f.missing && <span className="fav-gone">⚠️ 会话记录已不存在</span>}
+          </div>
+        </div>
+        <div className="fav-actions">
+          <button
+            className="rs-launch"
+            disabled={!f.cwd || f.running || f.missing}
+            title={
+              f.missing
+                ? "会话记录已被删除，无法继续"
+                : !f.cwd
+                ? "该会话无目录信息"
+                : f.running
+                ? "运行中的会话已在终端打开，无需继续"
+                : "续上该会话（claude --resume）"
+            }
+            onClick={() =>
+              resumeSession(f.cwd, f.session_id, f.project, f.running)
+            }
+          >
+            ⟳ 一键继续
+          </button>
+          <button
+            className="rs-fav on"
+            title="从收藏夹移除"
+            onClick={() => removeFav(f.session_id)}
+          >
+            ★
+          </button>
+        </div>
+      </li>
+    );
+  }
+
   function flashLaunch(t: string) {
     setLaunchMsg(t);
     window.setTimeout(() => setLaunchMsg(null), 2800);
   }
-  // 一键在该会话原目录重开 Claude（复用启动器：会带启动器里配的代理/前置命令）
-  async function launchAt(s: RecentSession) {
-    if (!s.cwd) return;
+  // 一键续会话：在原目录跑 `claude --resume <id>`，复用启动器的代理/前置命令与 WT 设置。
+  async function resumeSession(
+    cwd: string | null,
+    sessionId: string,
+    project: string | null,
+    running: boolean
+  ) {
+    if (!cwd) return;
+    if (running) {
+      flashLaunch("⚠️ 该会话仍在运行中，已在终端打开，无需继续");
+      return;
+    }
     try {
-      await invoke("launcher_launch", { path: s.cwd });
-      flashLaunch(`✅ 已在 ${s.project || s.cwd} 启动 Claude`);
-      loadRecent();
+      await invoke("launcher_resume", { path: cwd, sessionId });
+      flashLaunch(`✅ 已续上会话：${project || cwd}`);
+    } catch (e) {
+      flashLaunch("❌ " + String(e));
+    }
+  }
+
+  // 加入 / 取消收藏（按 session_id 判定当前是否已收藏）。
+  async function toggleFav(s: RecentSession) {
+    try {
+      if (favSet.has(s.session_id)) {
+        await invoke("favorites_remove", { sessionId: s.session_id });
+      } else {
+        await invoke("favorites_add", {
+          sessionId: s.session_id,
+          file: s.file,
+          cwd: s.cwd,
+          project: s.project,
+          title: s.title || s.last_prompt,
+        });
+        flashLaunch("⭐ 已加入收藏夹");
+      }
+      loadFavs();
+    } catch (e) {
+      flashLaunch("❌ " + String(e));
+    }
+  }
+
+  // 从收藏夹移除一条。
+  async function removeFav(sessionId: string) {
+    try {
+      await invoke("favorites_remove", { sessionId });
+      loadFavs();
     } catch (e) {
       flashLaunch("❌ " + String(e));
     }
@@ -1082,7 +1222,7 @@ function App() {
           {launchMsg && <div className="banner ok">{launchMsg}</div>}
           <div className="recent-head">
             <span className="recent-hint">
-              最近 15 个会话（每页 5 个）+ 按项目目录分组 — 点开看最后几条消息，▶ 在原目录重新打开
+              最近 15 个会话（每页 5 个）+ 按项目目录分组 — 点开看最后几条消息，⟳ 一键续上原会话，☆ 收藏关机后再续
             </span>
             <div className="recent-actions">
               <div className="rs-search-box">
@@ -1133,6 +1273,23 @@ function App() {
               </button>
             </div>
           </div>
+          {favs.length > 0 && (
+            <section className="rs-section fav-section">
+              <div
+                className="rs-section-bar fav-bar"
+                onClick={() => setFavCollapsed((v) => !v)}
+              >
+                <h3 className="rs-section-title">
+                  <span className="rs-caret">{favCollapsed ? "▸" : "▾"}</span>
+                  ⭐ 收藏夹 · {favs.length}
+                </h3>
+                <span className="fav-hint">关机前收藏未聊完的会话，回来一键续上</span>
+              </div>
+              {!favCollapsed && (
+                <ul className="rs-list fav-list">{favs.map(renderFavRow)}</ul>
+              )}
+            </section>
+          )}
           {query.trim() ? (
             <section className="rs-section">
               <div className="rs-section-bar">

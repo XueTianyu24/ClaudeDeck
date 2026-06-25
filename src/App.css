@@ -2586,6 +2586,96 @@ tr.muted {
   border-color: var(--red);
   color: #fff;
 }
+/* 收藏星：默认空心低调，已收藏(.on)实心金色 */
+.rs-fav {
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--dim);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rs-fav:hover {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.rs-fav.on {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+/* ── 收藏夹分区 ── */
+.fav-bar {
+  cursor: pointer;
+  user-select: none;
+}
+.fav-hint {
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 400;
+}
+.fav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.fav-row.gone {
+  opacity: 0.55;
+  border-left-color: var(--dim);
+}
+.fav-info {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fav-titleline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.fav-title {
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fav-subline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.fav-gone {
+  color: var(--red);
+  font-size: 12px;
+}
+.fav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
 .rs-detail {
   border-top: 1px dashed var(--border);
   padding: 10px 14px 6px;

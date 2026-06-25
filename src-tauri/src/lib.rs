@@ -1984,13 +1984,29 @@ fn wt_available() -> bool {
 #[cfg(windows)]
 const WT_WINDOW_NAME: &str = "ClaudeDeck";
 
+/// 构造启动命令：无 resume_id → `claude`（新会话）；有则 `claude --resume <id>`（续指定会话）。
+/// session_id 是 UUID（`[0-9a-fA-F-]`），调用方已校验，这里直接拼接安全。
+fn claude_cmd(resume_id: Option<&str>) -> String {
+    match resume_id {
+        Some(id) if !id.trim().is_empty() => format!("claude --resume {}", id.trim()),
+        _ => "claude".to_string(),
+    }
+}
+
 #[cfg(windows)]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, use_wt: bool) -> Result<(), String> {
-    // 脚本：可选 pre_cmd（如注入代理）后起 claude。
+fn spawn_claude(
+    dir: &str,
+    pre_cmd_enabled: bool,
+    pre_cmd: &str,
+    use_wt: bool,
+    resume_id: Option<&str>,
+) -> Result<(), String> {
+    let cc = claude_cmd(resume_id);
+    // 脚本：可选 pre_cmd（如注入代理）后起 claude / claude --resume。
     let script = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-        format!("{}\nclaude", pre_cmd.trim())
+        format!("{}\n{}", pre_cmd.trim(), cc)
     } else {
-        "claude".to_string()
+        cc.clone()
     };
 
     // WT 多 tab 工作区模式：在「ClaudeDeck 专属具名窗口」(`-w ClaudeDeck`) 甩一个新 tab，
@@ -2034,7 +2050,7 @@ fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, use_wt: bool) -
             .spawn()
     } else {
         Command::new("cmd")
-            .args(["/k", "claude"])
+            .args(["/k", &cc])
             .current_dir(dir)
             .spawn()
     };
@@ -2048,13 +2064,20 @@ fn sh_quote(s: &str) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) -> Result<(), String> {
+fn spawn_claude(
+    dir: &str,
+    pre_cmd_enabled: bool,
+    pre_cmd: &str,
+    _use_wt: bool,
+    resume_id: Option<&str>,
+) -> Result<(), String> {
     // use_wt 是 Windows Terminal 专属，macOS 忽略。
-    // 用 Terminal.app 开新窗口：cd 到目录后（可选前置命令）跑 claude。
+    // 用 Terminal.app 开新窗口：cd 到目录后（可选前置命令）跑 claude / claude --resume。
+    let cc = claude_cmd(resume_id);
     let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-        format!("cd {} && {} ; claude", sh_quote(dir), pre_cmd.trim())
+        format!("cd {} && {} ; {}", sh_quote(dir), pre_cmd.trim(), cc)
     } else {
-        format!("cd {} && claude", sh_quote(dir))
+        format!("cd {} && {}", sh_quote(dir), cc)
     };
     // 嵌进 AppleScript 字符串：转义反斜杠与双引号。
     let escaped = inner.replace('\\', "\\\\").replace('"', "\\\"");
@@ -2071,13 +2094,20 @@ fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) 
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) -> Result<(), String> {
+fn spawn_claude(
+    dir: &str,
+    pre_cmd_enabled: bool,
+    pre_cmd: &str,
+    _use_wt: bool,
+    resume_id: Option<&str>,
+) -> Result<(), String> {
     // use_wt 是 Windows Terminal 专属，Linux 忽略。
-    // 尽力用常见终端模拟器开窗跑 claude，失败再退回无窗口直接 spawn。
+    // 尽力用常见终端模拟器开窗跑 claude / claude --resume，失败再退回无窗口直接 spawn。
+    let cc = claude_cmd(resume_id);
     let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-        format!("cd {} && {} ; claude; exec bash", sh_quote(dir), pre_cmd.trim())
+        format!("cd {} && {} ; {}; exec bash", sh_quote(dir), pre_cmd.trim(), cc)
     } else {
-        format!("cd {} && claude; exec bash", sh_quote(dir))
+        format!("cd {} && {}; exec bash", sh_quote(dir), cc)
     };
     for term in ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"] {
         if Command::new(term)
@@ -2088,7 +2118,13 @@ fn spawn_claude(dir: &str, pre_cmd_enabled: bool, pre_cmd: &str, _use_wt: bool) 
             return Ok(());
         }
     }
-    Command::new("claude")
+    let mut fallback = Command::new("claude");
+    if let Some(id) = resume_id {
+        if !id.trim().is_empty() {
+            fallback.args(["--resume", id.trim()]);
+        }
+    }
+    fallback
         .current_dir(dir)
         .spawn()
         .map(|_| ())
@@ -2148,8 +2184,141 @@ fn launcher_launch(path: String) -> Result<LauncherConfig, String> {
     let mut cfg = load_launcher_config();
     launcher_touch_and_sort(&mut cfg, &p);
     save_launcher_config(&cfg)?;
-    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd, cfg.use_wt)?;
+    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd, cfg.use_wt, None)?;
     Ok(cfg)
+}
+
+/// 在原项目目录下「续上」一个已存在的会话（`claude --resume <session_id>`）。
+/// 复用启动器配置的代理/前置命令与 WT 设置；但**不**写入「最近项目」列表
+/// （续旧会话不等于把该目录当新工作目录，避免污染启动器近期列表）。
+/// session_id 仅允许 UUID 字符集（`[0-9a-zA-Z-]`），挡命令注入。
+#[tauri::command]
+fn launcher_resume(path: String, session_id: String) -> Result<(), String> {
+    let p = path.trim().to_string();
+    if p.is_empty() {
+        return Err("路径为空".into());
+    }
+    if !Path::new(&p).exists() {
+        return Err(format!("目录不存在：{p}"));
+    }
+    let sid = session_id.trim();
+    if sid.is_empty() || !sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err("非法的会话 ID".into());
+    }
+    let cfg = load_launcher_config();
+    spawn_claude(&p, cfg.pre_cmd_enabled, &cfg.pre_cmd, cfg.use_wt, Some(sid))
+}
+
+// ── 会话收藏夹（favorites）────────────────────────────────────────────
+// 用户把「还没聊完、关机后想回来续」的会话加进收藏夹，下次一键 resume。
+// 存 launcher.json 同目录的 favorites.json（一个 Favorite 数组）。
+// 只存续会话所需的快照字段（session_id/cwd/title…）；running / missing 在 list 时
+// 实时计算（交叉运行中 pid + 文件是否还在），不持久化。
+
+/// 持久化的一条收藏（快照，跟着会话走）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Favorite {
+    session_id: String,
+    /// jsonl 绝对路径（续会话不直接用，但用于判定文件是否还在 + 删除联动）
+    file: String,
+    cwd: Option<String>,
+    project: Option<String>,
+    title: Option<String>,
+    /// 收藏时间（unix 秒）
+    added_at: u64,
+}
+
+/// 返回给前端的收藏（带实时计算的 running / missing）。
+#[derive(Debug, Serialize)]
+struct FavoriteView {
+    #[serde(flatten)]
+    fav: Favorite,
+    /// 该会话当前是否有活进程（运行中不可续——避免对同一 jsonl 开第二个 REPL）
+    running: bool,
+    /// jsonl 是否已不存在（会话被删/移走，收藏成了悬空项）
+    missing: bool,
+}
+
+fn favorites_path() -> Option<PathBuf> {
+    launcher_config_dir().map(|d| d.join("favorites.json"))
+}
+
+fn load_favorites() -> Vec<Favorite> {
+    let Some(path) = favorites_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn save_favorites(list: &[Favorite]) -> Result<(), String> {
+    let dir = launcher_config_dir().ok_or("无法定位配置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let path = favorites_path().ok_or("无法定位收藏文件")?;
+    let text = serde_json::to_string_pretty(list).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写收藏失败: {e}"))
+}
+
+/// 列出收藏（按收藏时间倒序），实时附上 running / missing。
+#[tauri::command]
+fn favorites_list() -> Vec<FavoriteView> {
+    let running: HashSet<String> = read_session_views()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.alive)
+        .filter_map(|s| s.session_id)
+        .collect();
+    let mut list = load_favorites();
+    list.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+    list.into_iter()
+        .map(|f| FavoriteView {
+            running: running.contains(&f.session_id),
+            missing: !Path::new(&f.file).exists(),
+            fav: f,
+        })
+        .collect()
+}
+
+/// 加入收藏（按 session_id 去重；已存在则更新快照）。
+#[tauri::command]
+fn favorites_add(
+    session_id: String,
+    file: String,
+    cwd: Option<String>,
+    project: Option<String>,
+    title: Option<String>,
+) -> Result<(), String> {
+    let sid = session_id.trim().to_string();
+    if sid.is_empty() {
+        return Err("会话 ID 为空".into());
+    }
+    let mut list = load_favorites();
+    let entry = Favorite {
+        session_id: sid.clone(),
+        file,
+        cwd,
+        project,
+        title,
+        added_at: now_secs(),
+    };
+    if let Some(slot) = list.iter_mut().find(|f| f.session_id == sid) {
+        let added_at = slot.added_at; // 保留原收藏时间
+        *slot = Favorite { added_at, ..entry };
+    } else {
+        list.push(entry);
+    }
+    save_favorites(&list)
+}
+
+/// 取消收藏。
+#[tauri::command]
+fn favorites_remove(session_id: String) -> Result<(), String> {
+    let sid = session_id.trim();
+    let mut list = load_favorites();
+    list.retain(|f| f.session_id != sid);
+    save_favorites(&list)
 }
 
 // ── 定时开窗（warmup）────────────────────────────────────────────────
@@ -3192,6 +3361,10 @@ pub fn run() {
             launcher_save_precmd,
             launcher_set_use_wt,
             launcher_launch,
+            launcher_resume,
+            favorites_list,
+            favorites_add,
+            favorites_remove,
             schedule_get_config,
             schedule_set_enabled,
             schedule_set_prompt,

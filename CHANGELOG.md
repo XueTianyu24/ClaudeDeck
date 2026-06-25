@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.10] - 2026-06-26
+
+### 新增 / 优化
+- **会话监控：「在此启动」→「⟳ 一键继续」（真正续上原会话）**。原按钮是在会话所在项目目录**新开**一个会话（和启动器选目录新开重复，价值不大）。现改为在原目录跑 `claude --resume <session_id>` **续上这条会话本身**——接着上次的上下文往下聊。复用启动器配置的代理 / 前置命令与 Windows Terminal 设置。**运行中的会话禁用「一键继续」**（该会话已在某终端打开，再 resume 会对同一 jsonl 开第二个 REPL）；无目录信息的会话也禁用。
+- **会话监控：会话收藏夹**。每个会话行新增 `☆/★` 收藏开关；关机前把「还没聊完、下次想回来续」的会话加进收藏夹，会话监控页顶部「⭐ 收藏夹」分区（可折叠）集中列出，每条带「⟳ 一键继续」+「★ 取消收藏」，一键续上不必再翻找。收藏项实时标注**运行中**（禁续）与**会话记录已删除**（悬空项置灰，提示移除）。收藏存本机 `favorites.json`（launcher.json 同目录），只存续会话所需快照。
+  - 关键改动：`src-tauri/src/lib.rs`（`spawn_claude` 加 `resume_id` 参数走三平台、新增 `launcher_resume` 命令含 session_id 字符集校验防注入、收藏夹 `Favorite`/`FavoriteView` + `favorites_list`/`favorites_add`/`favorites_remove`）、`src/App.tsx`（按钮改续会话 + 收藏开关 + 收藏夹分区 + `renderFavRow`）、`src/App.css`（`.rs-fav` / `.fav-*` 样式）。
+
 ## [0.9.9] - 2026-06-22
 
 ### 新增 / 优化
