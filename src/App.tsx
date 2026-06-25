@@ -14,6 +14,7 @@ import SkillView from "./SkillView";
 import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
 import Markdown from "./Markdown";
+import SessionFullView from "./SessionFullView";
 import { fmtBytes, fmtCost, fmtTokens } from "./usageFormat";
 
 type Session = {
@@ -210,6 +211,12 @@ function App() {
   const [tailLoading, setTailLoading] = useState(false);
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set()); // 折叠的项目分组 key
+  const [recentPage, setRecentPage] = useState(0); // 「最近会话」当前页（每页 5 个）
+  const [query, setQuery] = useState(""); // 会话检索关键词（后端全文检索）
+  const [searchWeeks, setSearchWeeks] = useState(3); // 检索时间范围（周），0=全部
+  const [searchResults, setSearchResults] = useState<RecentSession[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [fullView, setFullView] = useState<RecentSession | null>(null); // 全文查看的会话
   // 单会话成本（session_id → SessionCost）。全量解析较重，故不进 3s 轮询，
   // 只在进入会话页 / 手动刷新时拉一次。
   const [costMap, setCostMap] = useState<Map<string, SessionCost>>(new Map());
@@ -324,6 +331,32 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
+  // 会话全文检索：关键词/范围变化时 debounce 400ms 调后端（扫文件有延迟，不每键一扫）。
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = window.setTimeout(async () => {
+      try {
+        const res = await invoke<RecentSession[]>("search_sessions", {
+          query: q,
+          weeks: searchWeeks,
+        });
+        setSearchResults(res);
+        setRecentErr(null);
+      } catch (e) {
+        setRecentErr(String(e));
+      } finally {
+        setSearching(false);
+      }
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [query, searchWeeks]);
+
   // 点开/收起某会话，展开时拉它的最后几条消息。
   // rowKey 唯一标识一行（同一会话在「最近」与「按项目」两处用不同前缀，互不牵连）。
   async function toggleExpand(rowKey: string, s: RecentSession) {
@@ -355,14 +388,27 @@ function App() {
     });
   }
 
-  // 最近 5 个会话（跨项目，纯按活跃时间倒序，不受运行中置顶影响）
-  const recentTop5 = useMemo(
+  // 最近 15 个会话（跨项目，纯按活跃时间倒序，不受运行中置顶影响），分页每页 5 个
+  const recentTop15 = useMemo(
     () =>
       [...recent]
         .sort((a, b) => b.last_active_ms - a.last_active_ms)
-        .slice(0, 5),
+        .slice(0, 15),
     [recent]
   );
+  const RECENT_PAGE_SIZE = 5;
+  const recentPageCount = Math.max(
+    1,
+    Math.ceil(recentTop15.length / RECENT_PAGE_SIZE)
+  );
+  // 数据变化可能让当前页超界 → 渲染用 clamp 后的有效页，翻页基于它
+  const recentPageClamped = Math.min(recentPage, recentPageCount - 1);
+  const recentPageItems = recentTop15.slice(
+    recentPageClamped * RECENT_PAGE_SIZE,
+    recentPageClamped * RECENT_PAGE_SIZE + RECENT_PAGE_SIZE
+  );
+  const goRecentPage = (p: number) =>
+    setRecentPage(Math.max(0, Math.min(p, recentPageCount - 1)));
 
   // 按项目目录（cwd）分组：组内运行中置顶再按活跃倒序；含运行中的组排前、其余按最近活跃倒序
   const groups = useMemo(() => {
@@ -497,6 +543,18 @@ function App() {
         </div>
         {expanded === rowKey && (
           <div className="rs-detail">
+            <div className="rs-detail-bar">
+              <span className="rs-detail-hint">最近几条预览</span>
+              <button
+                className="rs-fulltext"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFullView(s);
+                }}
+              >
+                📄 查看全文
+              </button>
+            </div>
             {tailLoading ? (
               <p className="rs-loading">加载消息…</p>
             ) : tail.length === 0 ? (
@@ -1024,20 +1082,81 @@ function App() {
           {launchMsg && <div className="banner ok">{launchMsg}</div>}
           <div className="recent-head">
             <span className="recent-hint">
-              最近 5 个会话 + 按项目目录分组 — 点开看最后几条消息，▶ 在原目录重新打开
+              最近 15 个会话（每页 5 个）+ 按项目目录分组 — 点开看最后几条消息，▶ 在原目录重新打开
             </span>
-            <button
-              className="refresh"
-              onClick={() => {
-                loadRecent();
-                loadCosts();
-              }}
-              title="刷新"
-            >
-              ↻
-            </button>
+            <div className="recent-actions">
+              <div className="rs-search-box">
+                <input
+                  className="rs-search"
+                  type="search"
+                  placeholder="全文搜索会话内容…"
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setRecentPage(0);
+                  }}
+                />
+                {query && (
+                  <button
+                    className="rs-search-x"
+                    onClick={() => {
+                      setQuery("");
+                      setRecentPage(0);
+                    }}
+                    title="清空搜索"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <select
+                className="rs-weeks"
+                value={searchWeeks}
+                onChange={(e) => setSearchWeeks(Number(e.target.value))}
+                title="检索时间范围（范围越小越快）"
+              >
+                <option value={1}>近 1 周</option>
+                <option value={2}>近 2 周</option>
+                <option value={3}>近 3 周</option>
+                <option value={12}>近 3 月</option>
+                <option value={0}>全部</option>
+              </select>
+              <button
+                className="refresh"
+                onClick={() => {
+                  loadRecent();
+                  loadCosts();
+                }}
+                title="刷新"
+              >
+                ↻
+              </button>
+            </div>
           </div>
-          {recent.length === 0 ? (
+          {query.trim() ? (
+            <section className="rs-section">
+              <div className="rs-section-bar">
+                <h3 className="rs-section-title">
+                  🔍 搜索「{query.trim()}」·{" "}
+                  {searching ? "搜索中…" : `${searchResults.length} 个结果`}
+                </h3>
+              </div>
+              {searching ? (
+                <p className="rs-loading">搜索中…（时间范围越小越快）</p>
+              ) : searchResults.length === 0 ? (
+                <div className="empty">
+                  <p>没有匹配「{query.trim()}」的会话</p>
+                  <span>换个关键词，或把右上角时间范围调大（含「全部」）</span>
+                </div>
+              ) : (
+                <ul className="rs-list">
+                  {searchResults.map((s) =>
+                    renderRow(s, `search:${s.file}`, true)
+                  )}
+                </ul>
+              )}
+            </section>
+          ) : recent.length === 0 ? (
             <div className="empty">
               {recentLoading ? (
                 <p>加载中…</p>
@@ -1059,16 +1178,63 @@ function App() {
           ) : (
             <>
               <section className="rs-section">
-                <h3 className="rs-section-title">⏱ 最近会话</h3>
+                <div className="rs-section-bar">
+                  <h3 className="rs-section-title">
+                    ⏱ 最近会话 · {recentTop15.length}
+                  </h3>
+                  {recentPageCount > 1 && (
+                    <div className="rs-pager">
+                      <button
+                        className="rs-page-btn"
+                        disabled={recentPageClamped === 0}
+                        onClick={() => goRecentPage(recentPageClamped - 1)}
+                        title="上一页"
+                      >
+                        ‹
+                      </button>
+                      <span className="rs-page-ind">
+                        {recentPageClamped + 1} / {recentPageCount}
+                      </span>
+                      <button
+                        className="rs-page-btn"
+                        disabled={recentPageClamped >= recentPageCount - 1}
+                        onClick={() => goRecentPage(recentPageClamped + 1)}
+                        title="下一页"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <ul className="rs-list">
-                  {recentTop5.map((s) => renderRow(s, `top:${s.file}`, true))}
+                  {recentPageItems.map((s) =>
+                    renderRow(s, `top:${s.file}`, true)
+                  )}
                 </ul>
               </section>
 
               <section className="rs-section">
-                <h3 className="rs-section-title">
-                  📁 按项目浏览 · {groups.length} 个目录
-                </h3>
+                <div className="rs-section-bar">
+                  <h3 className="rs-section-title">
+                    📁 按项目浏览 · {groups.length} 个目录
+                  </h3>
+                  <div className="rs-group-actions">
+                    <button
+                      className="rs-link-btn"
+                      onClick={() => setCollapsedGroups(new Set())}
+                    >
+                      全部展开
+                    </button>
+                    <button
+                      className="rs-link-btn"
+                      onClick={() =>
+                        setCollapsedGroups(new Set(groups.map((g) => g.key)))
+                      }
+                    >
+                      全部折叠
+                    </button>
+                  </div>
+                </div>
                 {groups.map((g) => (
                   <div key={g.key} className="rs-group">
                     <div
@@ -1119,6 +1285,15 @@ function App() {
             </>
           )}
         </div>
+      )}
+      {fullView && (
+        <SessionFullView
+          file={fullView.file}
+          title={
+            fullView.title || fullView.last_prompt || fullView.session_id
+          }
+          onClose={() => setFullView(null)}
+        />
       )}
     </main>
   );

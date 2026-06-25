@@ -527,6 +527,41 @@ fn find_title_prompt(lines: &[String]) -> (Option<String>, Option<String>) {
     (title, prompt)
 }
 
+/// 由一个 jsonl 路径 + 文件元信息构建 RecentSession（读头部拿 cwd、尾部拿 aiTitle/lastPrompt）。
+/// list_recent_sessions 与 search_sessions 共用。
+fn build_recent_session(
+    path: &Path,
+    mt: i64,
+    size: u64,
+    running: &HashSet<String>,
+) -> RecentSession {
+    let head = read_head_lines(path, 40);
+    let tail = read_tail_lines(path, 64 * 1024);
+    let cwd = find_cwd(&head).or_else(|| find_cwd(&tail));
+    let (title, last_prompt) = find_title_prompt(&tail);
+    let session_id = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let project = cwd.as_deref().and_then(project_from_cwd).or_else(|| {
+        path.parent()
+            .and_then(|d| d.file_name())
+            .map(|s| decode_project_label(s.to_string_lossy().as_ref()))
+    });
+    let is_running = running.contains(&session_id);
+    RecentSession {
+        session_id,
+        file: path.to_string_lossy().to_string(),
+        cwd,
+        project,
+        title,
+        last_prompt,
+        last_active_ms: mt,
+        size_bytes: size,
+        running: is_running,
+    }
+}
+
 #[tauri::command]
 fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, String> {
     let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
@@ -578,31 +613,7 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
 
     let mut out = Vec::new();
     for (path, mt, size) in files {
-        let head = read_head_lines(&path, 40);
-        let tail = read_tail_lines(&path, 64 * 1024);
-        let cwd = find_cwd(&head).or_else(|| find_cwd(&tail));
-        let (title, last_prompt) = find_title_prompt(&tail);
-        let session_id = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let project = cwd.as_deref().and_then(project_from_cwd).or_else(|| {
-            path.parent()
-                .and_then(|d| d.file_name())
-                .map(|s| decode_project_label(s.to_string_lossy().as_ref()))
-        });
-        let running = running.contains(&session_id);
-        out.push(RecentSession {
-            session_id,
-            file: path.to_string_lossy().to_string(),
-            cwd,
-            project,
-            title,
-            last_prompt,
-            last_active_ms: mt,
-            size_bytes: size,
-            running,
-        });
+        out.push(build_recent_session(&path, mt, size, &running));
     }
     // 运行中置顶，其余维持 mtime 倒序。
     out.sort_by(|a, b| {
@@ -611,6 +622,110 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
             .then_with(|| b.last_active_ms.cmp(&a.last_active_ms))
     });
     Ok(out)
+}
+
+/// 全文检索会话：扫指定时间范围内（按 mtime）所有 jsonl 的完整内容，大小写不敏感
+/// 粗匹配关键词（整文件 contains，不逐行解析 JSON；命中后才解析头尾拿元数据）。
+/// weeks = 时间范围周数（None / 0 = 全部，作性能旋钮）。结果按运行中置顶 + mtime 倒序，至多 80 条。
+#[tauri::command]
+fn search_sessions(query: String, weeks: Option<u32>) -> Result<Vec<RecentSession>, String> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    // 时间下限（ms）；weeks=None/0 = 不限。
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let cutoff_ms: i64 = match weeks {
+        Some(w) if w > 0 => now_ms - (w as i64) * 7 * 24 * 3600 * 1000,
+        _ => 0,
+    };
+
+    let running: HashSet<String> = read_session_views()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.alive)
+        .filter_map(|s| s.session_id)
+        .collect();
+
+    let mut hits: Vec<RecentSession> = Vec::new();
+    for proj in fs::read_dir(&root)
+        .map_err(|e| format!("读取 projects 目录失败: {e}"))?
+        .flatten()
+    {
+        let pdir = proj.path();
+        if !pdir.is_dir() {
+            continue;
+        }
+        let rd = match fs::read_dir(&pdir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        for f in rd.flatten() {
+            let p = f.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let meta = f.metadata().ok();
+            let mt = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            if mt < cutoff_ms {
+                continue;
+            }
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let content = match fs::read_to_string(&p) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            // 廉价预筛：整文件（含噪音）都不含关键词 → 直接跳过，不逐行解析。
+            if !content.to_lowercase().contains(&q) {
+                continue;
+            }
+            // 精确确认：只在「真实对话文本」里命中才算 —— 仅 user/assistant 消息，
+            // 且经 extract_msg_text 只取 content 的 text 块（跳过工具调用/工具结果/思维链/
+            // 各类元数据行）。这样避免整文件粗匹配把 JSON 结构、工具输出、文件内容当成命中。
+            let mut matched = false;
+            for line in content.lines() {
+                let v = match serde_json::from_str::<Value>(line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let t = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if t != "user" && t != "assistant" {
+                    continue;
+                }
+                if extract_msg_text(v.get("message"))
+                    .to_lowercase()
+                    .contains(&q)
+                {
+                    matched = true;
+                    break;
+                }
+            }
+            if matched {
+                hits.push(build_recent_session(&p, mt, size, &running));
+            }
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        b.running
+            .cmp(&a.running)
+            .then_with(|| b.last_active_ms.cmp(&a.last_active_ms))
+    });
+    hits.truncate(80);
+    Ok(hits)
 }
 
 /// 会话详情里的一条消息（只取真实对话文本，跳过工具往返）。
@@ -647,16 +762,15 @@ fn extract_msg_text(message: Option<&Value>) -> String {
     }
 }
 
-/// 读某会话尾部最近 max 条真实对话消息（user/assistant 文本，跳过纯工具往返）。
-#[tauri::command]
-fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>, String> {
+/// 解析整个会话的真实对话消息（user/assistant 文本，跳过纯工具往返），按原顺序。
+/// 路径校验防穿越。read_session_tail / read_session_full 共用。
+fn parse_session_msgs(file: &str) -> Result<Vec<SessionMsg>, String> {
     let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
-    let path = PathBuf::from(&file);
+    let path = PathBuf::from(file);
     // 安全：必须落在 projects 目录内、且是 jsonl，挡路径穿越。
     if path.extension().and_then(|s| s.to_str()) != Some("jsonl") || !path.starts_with(&root) {
         return Err("非法的会话文件路径".into());
     }
-    let n = max.unwrap_or(8).max(1);
     let content = fs::read_to_string(&path).map_err(|e| format!("读取会话失败: {e}"))?;
 
     let mut msgs: Vec<SessionMsg> = Vec::new();
@@ -683,8 +797,22 @@ fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>
             timestamp,
         });
     }
+    Ok(msgs)
+}
+
+/// 读某会话尾部最近 max 条真实对话消息（快速预览用）。
+#[tauri::command]
+fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>, String> {
+    let n = max.unwrap_or(8).max(1);
+    let mut msgs = parse_session_msgs(&file)?;
     let start = msgs.len().saturating_sub(n);
     Ok(msgs.split_off(start))
+}
+
+/// 读某会话的完整对话（全部 user/assistant 文本，按原顺序），供「查看全文」用。
+#[tauri::command]
+fn read_session_full(file: String) -> Result<Vec<SessionMsg>, String> {
+    parse_session_msgs(&file)
 }
 
 /// 删除单个会话记录文件（jsonl）。物理删除、不可恢复，前端负责二次确认。
@@ -3080,7 +3208,9 @@ pub fn run() {
             uninstall_phone_hook,
             test_phone_push,
             list_recent_sessions,
+            search_sessions,
             read_session_tail,
+            read_session_full,
             delete_session,
             usage::list_token_usage,
             usage::list_session_costs
