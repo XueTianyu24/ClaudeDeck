@@ -610,15 +610,20 @@ function App() {
             ) : (
               tail.map((m, i) => (
                 <div key={i} className={`rs-msg ${m.role}`}>
-                  <div className="rs-role">
-                    {m.role === "user" ? "🧑 你" : "🤖 Claude"}
+                  <div className={`cd-avatar ${m.role}`}>
+                    {m.role === "user" ? "🧑" : "🤖"}
                   </div>
-                  <div className="rs-text">
-                    <Markdown>
-                      {m.text.length > 1500
-                        ? m.text.slice(0, 1500) + " …（略）"
-                        : m.text}
-                    </Markdown>
+                  <div className="rs-msg-body">
+                    <div className="rs-role">
+                      {m.role === "user" ? "你" : "Claude"}
+                    </div>
+                    <div className="rs-text">
+                      <Markdown>
+                        {m.text.length > 1500
+                          ? m.text.slice(0, 1500) + " …（略）"
+                          : m.text}
+                      </Markdown>
+                    </div>
                   </div>
                 </div>
               ))

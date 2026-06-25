@@ -100,10 +100,16 @@ export default function SessionFullView({
   const [curMatch, setCurMatch] = useState(0); // 当前命中在 matches 里的下标
   const [flashTurn, setFlashTurn] = useState<number | null>(null); // 跳转后高亮的轮次
   const [onlyUser, setOnlyUser] = useState(false); // 仅显示用户提问（快速定位）
+  const [curTurn, setCurTurn] = useState(0); // 当前所在轮次（跟随滚动，逐轮导航用）
   const bodyRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef(0); // 导航游标（逐轮跳转的真实基准，连点也稳，不受滚动动画影响）
+  const progRef = useRef(false); // 程序化滚动进行中 → 暂停滚动同步，避免互相打架
+  const progTimer = useRef<number | null>(null);
 
   useEffect(() => {
     let alive = true;
+    navRef.current = 0;
+    setCurTurn(0);
     (async () => {
       try {
         const m = await invoke<Msg[]>("read_session_full", { file });
@@ -131,11 +137,42 @@ export default function SessionFullView({
     [turns, ql]
   );
 
-  function scrollToTurn(ti: number) {
+  // 滚动到某轮。align="start" 用于逐轮导航（顶部对齐，跳完顶部就是该轮，连续点才不回弹）；
+  // align="center" 用于搜索跳转（命中轮居中、看上下文）。程序化滚动期间置 progRef 暂停滚动同步。
+  function scrollToTurn(ti: number, align: ScrollLogicalPosition = "center") {
     const el = bodyRef.current?.querySelector(`[data-ti="${ti}"]`);
-    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+    el?.scrollIntoView({ block: align, behavior: "smooth" });
+    navRef.current = ti;
+    setCurTurn(ti);
     setFlashTurn(ti);
     window.setTimeout(() => setFlashTurn(null), 1500);
+    progRef.current = true;
+    if (progTimer.current) window.clearTimeout(progTimer.current);
+    progTimer.current = window.setTimeout(() => {
+      progRef.current = false;
+    }, 650);
+  }
+
+  // 当前视口顶部所在的轮次：取第一个「底边越过顶部参考线」的轮（顶部那条还没完全滚上去的）。
+  // 参考线法对很短的轮次也不误判（避免「顶 ≤ 阈值」把下一短轮也算进来）。
+  function currentVisibleTurn(): number {
+    const b = bodyRef.current;
+    if (!b) return 0;
+    const line = b.getBoundingClientRect().top + 8;
+    const els = Array.from(b.querySelectorAll<HTMLElement>("[data-ti]"));
+    for (const el of els) {
+      if (el.getBoundingClientRect().bottom > line) {
+        return Number(el.dataset.ti);
+      }
+    }
+    return els.length ? Number(els[els.length - 1].dataset.ti) : 0;
+  }
+
+  // 逐轮跳转：基准取导航游标（同步、连点也准），顶部对齐，clamp 到边界。
+  function goTurn(delta: number) {
+    if (!turns.length) return;
+    const next = Math.max(0, Math.min(navRef.current + delta, turns.length - 1));
+    scrollToTurn(next, "start");
   }
 
   // 搜索词变化：定位到第一个命中。
@@ -146,6 +183,28 @@ export default function SessionFullView({
       return () => window.clearTimeout(id);
     }
   }, [ql, msgs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 滚动时刷新「当前轮」指示（rAF 节流，passive）。
+  useEffect(() => {
+    const b = bodyRef.current;
+    if (!b || !turns.length) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (progRef.current || raf) return; // 程序化滚动期间不抢游标
+      raf = window.requestAnimationFrame(() => {
+        raf = 0;
+        const idx = currentVisibleTurn();
+        navRef.current = idx;
+        setCurTurn(idx);
+      });
+    };
+    b.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      b.removeEventListener("scroll", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns.length, onlyUser]);
 
   function goMatch(delta: number) {
     if (!matches.length) return;
@@ -287,24 +346,33 @@ export default function SessionFullView({
                   </div>
                   {t.user ? (
                     <div className="sf-bubble user">
-                      <div className="sf-role">🧑 用户</div>
-                      <div className="sf-text">
-                        <Markdown>{cleanUserText(t.user.text)}</Markdown>
+                      <div className="cd-avatar user">🧑</div>
+                      <div className="sf-bubble-body">
+                        <div className="sf-role">用户</div>
+                        <div className="sf-text">
+                          <Markdown>{cleanUserText(t.user.text)}</Markdown>
+                        </div>
                       </div>
                     </div>
                   ) : (
                     onlyUser && (
                       <div className="sf-bubble user">
-                        <div className="sf-role">（本轮无用户消息）</div>
+                        <div className="cd-avatar user">🧑</div>
+                        <div className="sf-bubble-body">
+                          <div className="sf-role dim">（本轮无用户消息）</div>
+                        </div>
                       </div>
                     )
                   )}
                   {!onlyUser &&
                     t.assistants.map((a, j) => (
                       <div key={j} className="sf-bubble assistant">
-                        <div className="sf-role">🤖 Claude</div>
-                        <div className="sf-text">
-                          <Markdown>{a.text}</Markdown>
+                        <div className="cd-avatar assistant">🤖</div>
+                        <div className="sf-bubble-body">
+                          <div className="sf-role">Claude</div>
+                          <div className="sf-text">
+                            <Markdown>{a.text}</Markdown>
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -313,6 +381,30 @@ export default function SessionFullView({
             </>
           )}
         </div>
+
+        {turns.length > 0 && (
+          <div className="sf-turnnav">
+            <button
+              className="sf-turnnav-btn"
+              onClick={() => goTurn(-1)}
+              disabled={curTurn <= 0}
+              title="上一个问答轮"
+            >
+              ‹ 上一轮
+            </button>
+            <span className="sf-turnnav-ind">
+              第 {curTurn + 1} / {turns.length} 轮
+            </span>
+            <button
+              className="sf-turnnav-btn"
+              onClick={() => goTurn(1)}
+              disabled={curTurn >= turns.length - 1}
+              title="下一个问答轮"
+            >
+              下一轮 ›
+            </button>
+          </div>
+        )}
 
         {turns.length > 0 && (
           <div className="sf-scrollbtns">
