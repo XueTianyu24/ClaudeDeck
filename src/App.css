@@ -131,6 +131,22 @@ body {
   border-color: var(--green);
 }
 
+.refresh:disabled {
+  cursor: default;
+}
+
+/* ↻ 手动刷新时转圈（只转图标，方形按钮本身不转以免抖动） */
+.refresh .spin {
+  display: inline-block;
+  animation: cd-spin 0.7s linear infinite;
+}
+
+@keyframes cd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ── settings panel ── */
 .settings-wrap {
   position: relative;

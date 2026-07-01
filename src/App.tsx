@@ -194,6 +194,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [lastSync, setLastSync] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false); // 右上角 ↻ 手动刷新中（转圈反馈）
   const [theme, setTheme] = useState<Theme>(
     () => (localStorage.getItem("cd-theme") as Theme) || "dark"
   );
@@ -297,6 +298,26 @@ function App() {
       setLastSync(Date.now());
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  // 右上角 ↻ 手动刷新：转圈给出可见反馈，并连带刷新「当前视图」的内容，
+  // 避免只刷了头部活动会话数、当前页看着「点了没反应」。
+  // （3s 轮询仍走轻量的 refresh()，不把重活〔成本全量解析〕拉进高频轮询。）
+  async function manualRefresh() {
+    if (refreshing) return;
+    setRefreshing(true);
+    const started = Date.now();
+    try {
+      await refresh();
+      if (view === "sessions") {
+        await Promise.all([loadRecent(), loadCosts(), loadFavs()]);
+      }
+    } finally {
+      // 太快看不到转圈，保证至少转 500ms 再停
+      const elapsed = Date.now() - started;
+      if (elapsed < 500) await new Promise((r) => setTimeout(r, 500 - elapsed));
+      setRefreshing(false);
     }
   }
 
@@ -1138,8 +1159,13 @@ function App() {
           >
             {theme === "dark" ? "☀" : "☾"}
           </button>
-          <button className="refresh" onClick={refresh} title="立即刷新">
-            ↻
+          <button
+            className="refresh"
+            onClick={manualRefresh}
+            disabled={refreshing}
+            title="立即刷新"
+          >
+            <span className={refreshing ? "spin" : ""}>↻</span>
           </button>
         </div>
       </header>
