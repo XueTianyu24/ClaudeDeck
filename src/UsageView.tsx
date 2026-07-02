@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { CircleDollarSign } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { CostTrendChart, ModelCostDonut } from "./UsageCharts";
 import { fmtCost, fmtTokens, shortModel } from "./usageFormat";
@@ -386,7 +387,7 @@ export default function UsageView() {
           onClick={openRates}
           title="查看各模型费率（只读）"
         >
-          💲 费率表
+          <CircleDollarSign size={13} /> 费率表
         </button>
         <button className="refresh" onClick={reload} title="重新扫描">
           ↻

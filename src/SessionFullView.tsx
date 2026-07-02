@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Bot, Copy, User } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import Markdown from "./Markdown";
 
@@ -238,7 +239,13 @@ export default function SessionFullView({
                 onClick={() => flashCopy("all", turnsToMarkdown(title, turns))}
                 disabled={!turns.length}
               >
-                {copied === "all" ? "✓ 已复制" : "📋 复制整会话"}
+                {copied === "all" ? (
+                  "✓ 已复制"
+                ) : (
+                  <>
+                    <Copy size={12} /> 复制整会话
+                  </>
+                )}
               </button>
               <button className="sf-x" onClick={onClose} title="关闭">
                 ✕
@@ -340,13 +347,19 @@ export default function SessionFullView({
                           flashCopy(`t${i}`, oneTurnMarkdown(t));
                         }}
                       >
-                        {copied === `t${i}` ? "✓ 已复制" : "📋 复制本轮"}
+                        {copied === `t${i}` ? (
+                          "✓ 已复制"
+                        ) : (
+                          <>
+                            <Copy size={12} /> 复制本轮
+                          </>
+                        )}
                       </button>
                     )}
                   </div>
                   {t.user ? (
                     <div className="sf-bubble user">
-                      <div className="cd-avatar user">🧑</div>
+                      <div className="cd-avatar user"><User size={15} /></div>
                       <div className="sf-bubble-body">
                         <div className="sf-role">用户</div>
                         <div className="sf-text">
@@ -357,7 +370,7 @@ export default function SessionFullView({
                   ) : (
                     onlyUser && (
                       <div className="sf-bubble user">
-                        <div className="cd-avatar user">🧑</div>
+                        <div className="cd-avatar user"><User size={15} /></div>
                         <div className="sf-bubble-body">
                           <div className="sf-role dim">（本轮无用户消息）</div>
                         </div>
@@ -367,7 +380,7 @@ export default function SessionFullView({
                   {!onlyUser &&
                     t.assistants.map((a, j) => (
                       <div key={j} className="sf-bubble assistant">
-                        <div className="cd-avatar assistant">🤖</div>
+                        <div className="cd-avatar assistant"><Bot size={15} /></div>
                         <div className="sf-bubble-body">
                           <div className="sf-role">Claude</div>
                           <div className="sf-text">

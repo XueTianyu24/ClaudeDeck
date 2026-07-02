@@ -1,35 +1,39 @@
-/* 默认 = 深色（无 data-theme 时也生效） */
+/* Beacon 双主题：深色 =「夜航」（深靛夜海 × 灯塔暖金），浅色 =「海图室」
+   （雾白纸面 × 墨蓝 × 深海青）——灯塔的昼与夜。--green 是历史命名，实为主强调色。 */
 :root,
 :root[data-theme="dark"] {
-  --bg: #0f1117;
-  --panel: #161922;
-  --panel-2: #1c2030;
-  --border: #262b3a;
-  --text: #e6e8ef;
-  --dim: #8b91a3;
-  --green: #3ecf8e;
+  --bg: #0a0e1a;
+  --panel: #111726;
+  --panel-2: #171e33;
+  --border: #242d49;
+  --text: #eaedf6;
+  --dim: #7e88a6;
+  --green: #f5b94b; /* 灯塔暖金（主强调） */
   --gray: #6b7280;
-  --red: #ef4444;
-  --amber: #f59e0b;
-  --blue: #60a5fa;
+  --red: #e5484d;
+  --amber: #e09044;
+  --blue: #6ba6ff;
 }
 
 :root[data-theme="light"] {
-  --bg: #f6f7f9;
+  --bg: #f2f4f3;
   --panel: #ffffff;
-  --panel-2: #eef1f5;
-  --border: #dde1e8;
-  --text: #1a1d26;
-  --dim: #5f6675;
-  --green: #15a36a;
+  --panel-2: #e9edeb;
+  --border: #d7ddda;
+  --text: #17233b;
+  --dim: #5d6b84;
+  --green: #0f7b7a; /* 深海青（主强调） */
   --gray: #9aa1ae;
-  --red: #dc2626;
-  --amber: #c2790a;
-  --blue: #2563eb;
+  --red: #c6373e;
+  --amber: #a9853c; /* 黄铜 */
+  --blue: #2e5eaa;
 }
 
 :root {
   color-scheme: dark light;
+  --font-ui: "Space Grotesk", "Segoe UI", "Microsoft YaHei", system-ui,
+    -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
 }
 
 body {
@@ -38,6 +42,13 @@ body {
 
 * {
   box-sizing: border-box;
+}
+
+/* lucide 线性图标：行内与文字基线对齐；flex 容器里不被压缩 */
+svg.lucide {
+  display: inline-block;
+  vertical-align: -2.5px;
+  flex: none;
 }
 
 html,
@@ -50,8 +61,15 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-ui);
   font-size: 14px;
+}
+
+/* 海图室（浅色）：纸面上叠一层极淡的海图网格 */
+:root[data-theme="light"] body {
+  background-image: linear-gradient(rgba(23, 35, 59, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 35, 59, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
 }
 
 .app {
@@ -104,6 +122,38 @@ body {
 .count {
   color: var(--green);
   font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+/* 签名元素：信标脉冲 —— 有活动会话时在顶栏安静呼吸 */
+.count .beacon-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  position: relative;
+  flex: none;
+}
+.count .beacon-dot::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--green);
+  opacity: 0.5;
+  animation: beacon-sweep 2.4s ease-out infinite;
+}
+@keyframes beacon-sweep {
+  0% {
+    transform: scale(0.4);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
 }
 
 .sync {
@@ -719,7 +769,7 @@ tr.muted {
 }
 
 .mono {
-  font-family: "Cascadia Code", "Consolas", monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
 }
 

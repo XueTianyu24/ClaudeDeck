@@ -1,5 +1,10 @@
-"""ClaudeDeck logo 母图（精修质感版）。1024x1024，4x 超采样。
-深蓝灰 squircle 面板 + 顶部柔光 + 暖橙活跃行发光 + 元素球面高光。"""
+# -*- coding: utf-8 -*-
+"""Beacon logo 母图（菲涅尔透镜信标，曹少选定的 concept2 程序化重绘）。
+1024x1024，4x 超采样。深靛夜海 squircle + 底部深海青暗示 + 暖金透镜
+（三道棱线）+ 柔和光晕 + 六道光线。改动后跑：
+  python scripts/make_logo.py
+  npm run tauri icon .tmp/logo_master.png
+并更新 src/assets/logo.png（脚本一并输出 256px 版本）。"""
 from PIL import Image, ImageDraw, ImageFilter, ImageChops
 import os
 import math
@@ -38,72 +43,92 @@ def squircle(size, inset, n=4.2):
 
 mask = squircle(W, 88 * S, n=4.2)
 
-# 背景：深蓝灰竖直渐变（顶部带一点蓝调，底部近黑）
-bg = vgrad(W, W, (44, 50, 70), (12, 14, 21)).convert("RGBA")
+# 背景：深靛夜海竖直渐变（顶部微亮的墨蓝 → 底部近黑）
+bg = vgrad(W, W, (22, 32, 58), (9, 14, 26)).convert("RGBA")
 img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 img.paste(bg, (0, 0), mask)
 
-# 顶部柔和高光（光从上方打下来的立体感）
+# 底部深海青暗示（海图室的另一半身份，很淡）
+teal = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+ImageDraw.Draw(teal).ellipse(
+    [W * 0.30, W * 0.72, W * 1.25, W * 1.45], fill=(15, 123, 122, 70)
+)
+teal = teal.filter(ImageFilter.GaussianBlur(120 * S))
+teal.putalpha(ImageChops.multiply(teal.getchannel("A"), mask))
+img = Image.alpha_composite(img, teal)
+
+# 顶部柔和高光（光从上方打下来的立体感，沿用旧版质感手法）
 hl = Image.new("RGBA", (W, W), (0, 0, 0, 0))
-ImageDraw.Draw(hl).ellipse([W * 0.10, -W * 0.34, W * 0.90, W * 0.44], fill=(255, 255, 255, 50))
+ImageDraw.Draw(hl).ellipse([W * 0.10, -W * 0.34, W * 0.90, W * 0.40], fill=(255, 255, 255, 34))
 hl = hl.filter(ImageFilter.GaussianBlur(95 * S))
 hl.putalpha(ImageChops.multiply(hl.getchannel("A"), mask))
 img = Image.alpha_composite(img, hl)
 
-# 元素几何
-dot_cx = 305 * S
-dot_r = 42 * S
-bar_x0 = 410 * S
-bar_h = 74 * S
-ORANGE = (240, 158, 114)
-rows = [(384, 795, True), (512, 690, False), (640, 600, False)]
+# ── 透镜信标 ──────────────────────────────────────────────
+CX, CY = 512 * S, 498 * S
+R = 206 * S  # 透镜半径
+GOLD_LIGHT = (250, 216, 142)  # 透镜浅金
+GOLD = (245, 185, 75)  # 品牌金
+GOLD_DEEP = (222, 158, 56)  # 棱线/描边深金
 
-# 暖橙活跃行的发光光晕（叠两层增强）
+# 光晕（收敛：贴着透镜的一圈暖光，别把夜海底色晕浑）
 glow = Image.new("RGBA", (W, W), (0, 0, 0, 0))
 gd = ImageDraw.Draw(glow)
-for cy, x1, active in rows:
-    if not active:
-        continue
-    cyy, x1s = cy * S, x1 * S
-    gd.ellipse([dot_cx - dot_r, cyy - dot_r, dot_cx + dot_r, cyy + dot_r], fill=ORANGE + (255,))
-    gd.rounded_rectangle([bar_x0, cyy - bar_h // 2, x1s, cyy + bar_h // 2],
-                         radius=bar_h // 2, fill=ORANGE + (255,))
+gd.ellipse([CX - R * 1.5, CY - R * 1.5, CX + R * 1.5, CY + R * 1.5], fill=GOLD + (26,))
+gd.ellipse([CX - R * 1.18, CY - R * 1.18, CX + R * 1.18, CY + R * 1.18], fill=GOLD + (60,))
 glow = glow.filter(ImageFilter.GaussianBlur(40 * S))
 glow.putalpha(ImageChops.multiply(glow.getchannel("A"), mask))
 img = Image.alpha_composite(img, glow)
-img = Image.alpha_composite(img, glow)
 
-# 实心元素 + 球面/厚度高光
 d = ImageDraw.Draw(img, "RGBA")
 
+# 六道光线（先画，透镜压上）：水平两道长、斜向四道短，圆头
+def ray(angle_deg, gap, length, width):
+    a = math.radians(angle_deg)
+    x0 = CX + math.cos(a) * (R + gap)
+    y0 = CY - math.sin(a) * (R + gap)
+    x1 = CX + math.cos(a) * (R + gap + length)
+    y1 = CY - math.sin(a) * (R + gap + length)
+    d.line([x0, y0, x1, y1], fill=GOLD_LIGHT + (255,), width=width)
+    for x, y in [(x0, y0), (x1, y1)]:
+        d.ellipse([x - width / 2, y - width / 2, x + width / 2, y + width / 2],
+                  fill=GOLD_LIGHT + (255,))
 
-def pill(x0, cy, x1, col, hi):
-    d.rounded_rectangle([x0, cy - bar_h // 2, x1, cy + bar_h // 2], radius=bar_h // 2, fill=col)
-    d.rounded_rectangle([x0 + bar_h * 0.16, cy - bar_h * 0.34, x1 - bar_h * 0.16, cy - bar_h * 0.06],
-                        radius=bar_h * 0.14, fill=hi)
 
+for ang in (0, 180):
+    ray(ang, 58 * S, 96 * S, 26 * S)
+for ang in (38, 142, 218, 322):
+    ray(ang, 52 * S, 66 * S, 24 * S)
 
-def dot(cx, cy, r, col, hi):
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=col)
-    d.ellipse([cx - r * 0.5, cy - r * 0.72, cx + r * 0.32, cy - r * 0.02], fill=hi)
+# 透镜本体：浅金圆 + 深金描边
+d.ellipse([CX - R, CY - R, CX + R, CY + R], fill=GOLD_LIGHT + (255,),
+          outline=GOLD_DEEP + (255,), width=int(13 * S))
 
+# 中心更暖的一层（球面感）
+core = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+ImageDraw.Draw(core).ellipse(
+    [CX - R * 0.62, CY - R * 0.62, CX + R * 0.62, CY + R * 0.62], fill=(252, 232, 178, 200)
+)
+core = core.filter(ImageFilter.GaussianBlur(30 * S))
+img = Image.alpha_composite(img, core)
+d = ImageDraw.Draw(img, "RGBA")
 
-for cy, x1, active in rows:
-    cyy, x1s = cy * S, x1 * S
-    if active:
-        col, hi = ORANGE + (255,), (255, 226, 206, 95)
-    else:
-        col, hi = (226, 230, 240, 235), (255, 255, 255, 65)
-    dot(dot_cx, cyy, dot_r, col, hi)
-    pill(bar_x0, cyy, x1s, col, hi)
+# 三道菲涅尔棱线：水平贯穿透镜（用弦长裁到圆内）
+for fy in (-0.42, 0.0, 0.42):
+    y = CY + R * fy
+    half = math.sqrt(max(R * R - (R * fy) ** 2, 0)) - 10 * S
+    d.line([CX - half, y, CX + half, y], fill=GOLD_DEEP + (255,), width=int(12 * S))
 
-# 细亮内描边（squircle 边缘光，提升精致感）
+# 细亮内描边（squircle 边缘光）
 ring = squircle(W, 88 * S, n=4.2)
 ring_in = squircle(W, 88 * S + 4 * S, n=4.2)
 edge_a = ImageChops.subtract(ring, ring_in)
 edge = Image.new("RGBA", (W, W), (255, 255, 255, 0))
-edge.putalpha(edge_a.point(lambda v: int(v * 0.28)))
+edge.putalpha(edge_a.point(lambda v: int(v * 0.30)))
 img = Image.alpha_composite(img, edge)
 
-img.resize((1024, 1024), Image.LANCZOS).save(os.path.join(out_dir, "logo_master.png"))
-print("saved refined logo (squircle + glow + highlights)")
+final = img.resize((1024, 1024), Image.LANCZOS)
+final.save(os.path.join(out_dir, "logo_master.png"))
+# app 内顶栏 logo（256px 够 2x 显示）
+final.resize((256, 256), Image.LANCZOS).save(os.path.join(out_dir, "logo_256.png"))
+print("saved Beacon lens logo: logo_master.png / logo_256.png")

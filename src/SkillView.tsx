@@ -1,4 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  Copy,
+  FileText,
+  Folder,
+  FolderOpen,
+  StickyNote,
+  Tag,
+  Trash2,
+} from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import Markdown from "./Markdown";
 
@@ -280,7 +289,9 @@ export default function SkillView() {
           >
             ← 返回技能列表
           </button>
-          <span className="mem-toolbar-title">🗑 技能回收站</span>
+          <span className="mem-toolbar-title">
+            <Trash2 size={13} /> 技能回收站
+          </span>
           <span className="mem-toolbar-hint">{trash.length} 项</span>
           {trash.length > 0 && (
             <button className="mem-toolbar-btn" onClick={() => purgeItem()}>
@@ -301,10 +312,14 @@ export default function SkillView() {
                   <div className="trash-name">{t.title || t.name}</div>
                   <div className="trash-meta">
                     {t.name}
-                    {t.tags.length > 0 && ` · 🏷 ${t.tags.join(", ")}`} ·{" "}
+                    {t.tags.length > 0 && ` · ${t.tags.join(", ")}`} ·{" "}
                     {fmtAgo(t.deleted_at)}删除
                   </div>
-                  {t.note && <div className="skill-note-text">📝 {t.note}</div>}
+                  {t.note && (
+                    <div className="skill-note-text">
+                      <StickyNote size={12} /> {t.note}
+                    </div>
+                  )}
                 </div>
                 <div className="trash-actions">
                   <button
@@ -333,7 +348,7 @@ export default function SkillView() {
       <div className="skill-view">
         <div className="skill-toolbar">
           <button className="mem-toolbar-btn" onClick={openTrash}>
-            🗑 回收站
+            <Trash2 size={12} /> 回收站
           </button>
         </div>
         <div className="empty">
@@ -382,7 +397,7 @@ export default function SkillView() {
           {filtered.length} / {skills.length} 个技能
         </span>
         <button className="mem-toolbar-btn" onClick={openTrash}>
-          🗑 回收站
+          <Trash2 size={12} /> 回收站
         </button>
       </div>
 
@@ -451,7 +466,7 @@ export default function SkillView() {
                   }}
                   title="点击编辑备注"
                 >
-                  📝 {s.note}
+                  <StickyNote size={12} /> {s.note}
                 </div>
               )}
 
@@ -466,33 +481,39 @@ export default function SkillView() {
                   onClick={() => copyName(s.name)}
                   title={`复制技能名：${s.name}`}
                 >
-                  {copied === s.name ? "✓ 已复制" : "📋 复制名"}
+                  {copied === s.name ? (
+                    "✓ 已复制"
+                  ) : (
+                    <>
+                      <Copy size={11} /> 复制名
+                    </>
+                  )}
                 </button>
                 <button
                   className="skill-tag-edit"
                   onClick={() => startEditTags(s)}
                 >
-                  🏷 标签
+                  <Tag size={11} /> 标签
                 </button>
                 <button
                   className="skill-tag-edit"
                   onClick={() => startEditNote(s)}
                 >
-                  📝 备注
+                  <StickyNote size={11} /> 备注
                 </button>
                 <button
                   className="skill-tag-edit"
                   onClick={() => openDir(s.name)}
                   title="在文件管理器中打开此 skill 目录"
                 >
-                  📂 打开目录
+                  <FolderOpen size={11} /> 打开目录
                 </button>
                 <button
                   className="skill-tag-edit danger"
                   onClick={() => deleteSkill(s)}
                   title="删除此技能（移入回收站）"
                 >
-                  🗑 删除
+                  <Trash2 size={11} /> 删除
                 </button>
               </div>
 
@@ -558,7 +579,9 @@ export default function SkillView() {
 
               {open && treeMap[s.name] && treeMap[s.name].length > 1 && (
                 <div className="skill-tree" onClick={(e) => e.stopPropagation()}>
-                  <div className="skill-section-label">📂 文件结构</div>
+                  <div className="skill-section-label">
+                    <FolderOpen size={12} /> 文件结构
+                  </div>
                   {treeMap[s.name].map((f) => {
                     const depth = f.path.split("/").length - 1;
                     const base = f.path.split("/").pop() || f.path;
@@ -569,7 +592,12 @@ export default function SkillView() {
                         style={{ paddingLeft: 8 + depth * 18 }}
                       >
                         <span>
-                          {f.is_dir ? "📁" : "📄"} {base}
+                          {f.is_dir ? (
+                            <Folder size={12} />
+                          ) : (
+                            <FileText size={12} />
+                          )}{" "}
+                          {base}
                         </span>
                         {!f.is_dir && (
                           <span className="skill-tree-size">
@@ -584,7 +612,9 @@ export default function SkillView() {
 
               {open && docMap[s.name]?.exists && (
                 <div className="skill-body" onClick={(e) => e.stopPropagation()}>
-                  <div className="skill-section-label">📄 SKILL.md</div>
+                  <div className="skill-section-label">
+                    <FileText size={12} /> SKILL.md
+                  </div>
                   <Markdown>{docMap[s.name].content}</Markdown>
                 </div>
               )}

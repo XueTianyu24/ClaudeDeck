@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Globe, Link2, ListOrdered, Trash2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import Markdown from "./Markdown";
 import ForceGraph, { type GNode, type GEdge } from "./ForceGraph";
@@ -380,7 +381,9 @@ export default function MemoryView() {
           }}
           title="~/.claude/CLAUDE.md"
         >
-          <span className="mem-proj-label">🌐 全局 CLAUDE.md</span>
+          <span className="mem-proj-label">
+            <Globe size={13} /> 全局 CLAUDE.md
+          </span>
         </button>
         {projects.length > 0 && <div className="mem-sidebar-sep">项目记忆</div>}
         {projects.map((p) => (
@@ -402,7 +405,9 @@ export default function MemoryView() {
           className={`mem-proj ${trashMode ? "active" : ""}`}
           onClick={openTrash}
         >
-          <span className="mem-proj-label">🗑 回收站</span>
+          <span className="mem-proj-label">
+            <Trash2 size={13} /> 回收站
+          </span>
         </button>
       </aside>
 
@@ -410,7 +415,9 @@ export default function MemoryView() {
         {trashMode ? (
           <div className="trash-panel">
             <div className="mem-toolbar">
-              <span className="mem-toolbar-title">🗑 回收站</span>
+              <span className="mem-toolbar-title">
+                <Trash2 size={13} /> 回收站
+              </span>
               <span className="mem-toolbar-hint">{trash.length} 项</span>
               {trash.length > 0 && (
                 <button
@@ -538,7 +545,7 @@ export default function MemoryView() {
                   className={`mem-toolbar-btn ${indexMode ? "active" : ""}`}
                   onClick={openIndex}
                 >
-                  📑 索引
+                  <ListOrdered size={12} /> 索引
                 </button>
               )}
               <span className="mem-toolbar-hint">
@@ -610,7 +617,7 @@ export default function MemoryView() {
               <div className="empty">
                 <p>该项目暂无记忆卡片</p>
                 {curHasIndex && (
-                  <span>仅剩 MEMORY.md 索引（点上方「📑 索引」查看）</span>
+                  <span>仅剩 MEMORY.md 索引（点上方「索引」查看）</span>
                 )}
                 <div className="empty-actions">
                   {confirmDirDel ? (
@@ -634,7 +641,7 @@ export default function MemoryView() {
                       className="mem-toolbar-btn danger"
                       onClick={() => setConfirmDirDel(true)}
                     >
-                      🗑 物理删除空目录
+                      <Trash2 size={12} /> 物理删除空目录
                     </button>
                   )}
                 </div>
@@ -700,7 +707,7 @@ export default function MemoryView() {
                                     title="删除（移入回收站）"
                                     onClick={() => setConfirmDel(m.file)}
                                   >
-                                    🗑
+                                    <Trash2 size={13} />
                                   </button>
                                 )}
                               </div>
@@ -769,7 +776,7 @@ export default function MemoryView() {
                                       onClick={() => jumpTo(l)}
                                       title={ok ? "跳到关联记忆" : "未找到该关联"}
                                     >
-                                      🔗 {l}
+                                      <Link2 size={11} /> {l}
                                     </button>
                                   );
                                 })}

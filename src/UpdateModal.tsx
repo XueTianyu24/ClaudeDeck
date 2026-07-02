@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Download, PartyPopper } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -125,7 +126,9 @@ export default function UpdateModal({
     <div className="um-overlay">
       <div className="um-modal">
         <div className="um-head">
-          <span className="um-emoji">🎉</span>
+          <span className="um-emoji">
+            <PartyPopper size={24} />
+          </span>
           <div className="um-headtext">
             <h3 className="um-title">发现新版本 v{data.latest}</h3>
             <p className="um-sub">当前 v{data.current}</p>
@@ -190,7 +193,7 @@ export default function UpdateModal({
           <div className="um-actions">
             {canAutoInstall ? (
               <button className="um-btn primary" onClick={startUpdate}>
-                ⬇ 立即更新（下载并自动安装）
+                <Download size={13} /> 立即更新（下载并自动安装）
               </button>
             ) : (
               <button

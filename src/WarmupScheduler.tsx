@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { AlarmClock, BookOpen } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -172,7 +173,9 @@ export default function WarmupScheduler() {
     <div className="ws">
       <div className="ws-head">
         <div>
-          <h3 className="ws-title">⏰ 定时开窗</h3>
+          <h3 className="ws-title">
+            <AlarmClock size={14} /> 定时开窗
+          </h3>
           <p className="lc-hint">
             到点自动跑 <code>claude -p</code> 发一条极简消息，开启 Claude 的 5
             小时使用窗口（窗口从第一条消息起算）。按你的作息安排，比如 07:00
@@ -303,7 +306,7 @@ export default function WarmupScheduler() {
         </div>
         <div className="ws-routines-btns">
           <button className="lc-btn" onClick={() => setShowGuide(true)}>
-            📖 添加教程
+            <BookOpen size={12} /> 添加教程
           </button>
           <button
             className="lc-btn primary"
@@ -318,7 +321,9 @@ export default function WarmupScheduler() {
         <div className="ws-guide-overlay" onClick={() => setShowGuide(false)}>
           <div className="ws-guide" onClick={(e) => e.stopPropagation()}>
             <div className="ws-guide-head">
-              <h3>📖 在官方 Routines 添加「定时开窗」</h3>
+              <h3>
+                <BookOpen size={13} /> 在官方 Routines 添加「定时开窗」
+              </h3>
               <button
                 className="ws-guide-x"
                 onClick={() => setShowGuide(false)}

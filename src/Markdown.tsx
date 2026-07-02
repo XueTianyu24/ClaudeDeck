@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Copy } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes, type PrismTheme } from "prism-react-renderer";
@@ -52,7 +53,13 @@ function CodeBlock({ language, code }: { language: string; code: string }) {
       <div className="cb-bar">
         <span className="cb-lang">{language || "code"}</span>
         <button className="cb-copy" onClick={onCopy} title="复制代码">
-          {copied ? "✓ 已复制" : "📋 复制"}
+          {copied ? (
+            "✓ 已复制"
+          ) : (
+            <>
+              <Copy size={11} /> 复制
+            </>
+          )}
         </button>
       </div>
       <Highlight theme={prismTheme()} code={code} language={language || "text"}>

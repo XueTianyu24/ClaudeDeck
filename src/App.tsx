@@ -14,6 +14,26 @@ import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
 import Markdown from "./Markdown";
 import SessionFullView from "./SessionFullView";
+import {
+  Apple,
+  Archive,
+  Bot,
+  FileText,
+  FolderOpen,
+  History,
+  Info,
+  MessageCircle,
+  Monitor,
+  Moon,
+  RotateCw,
+  Search,
+  Settings,
+  Smartphone,
+  Star,
+  Sun,
+  Trash2,
+  User,
+} from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
 import UpdateModal, { type UpdateData, type UpdateInfo } from "./UpdateModal";
@@ -586,7 +606,10 @@ function App() {
                 toggleFav(s);
               }}
             >
-              {favSet.has(s.session_id) ? "★" : "☆"}
+              <Star
+                size={14}
+                fill={favSet.has(s.session_id) ? "currentColor" : "none"}
+              />
             </button>
             <button
               className="rs-launch"
@@ -603,7 +626,7 @@ function App() {
                 resumeSession(s.cwd, s.session_id, s.project, s.running);
               }}
             >
-              ⟳ 一键继续
+              <RotateCw size={13} /> 一键继续
             </button>
             {(() => {
               const arming = confirmDel === rowKey;
@@ -631,11 +654,15 @@ function App() {
                     deleteSessionRow(s, rowKey);
                   }}
                 >
-                  {arming
-                    ? highRisk
-                      ? "⚠️ 确认删除"
-                      : "确认删除"
-                    : "🗑"}
+                  {arming ? (
+                    highRisk ? (
+                      "⚠️ 确认删除"
+                    ) : (
+                      "确认删除"
+                    )
+                  ) : (
+                    <Trash2 size={13} />
+                  )}
                 </button>
               );
             })()}
@@ -660,7 +687,7 @@ function App() {
               setFullView(s);
             }}
           >
-            📄 查看全文
+            <FileText size={13} /> 查看全文
           </button>
         </div>
         {tailLoading ? (
@@ -671,7 +698,7 @@ function App() {
           tail.map((m, i) => (
             <div key={i} className={`rs-msg ${m.role}`}>
               <div className={`cd-avatar ${m.role}`}>
-                {m.role === "user" ? "🧑" : "🤖"}
+                {m.role === "user" ? <User size={15} /> : <Bot size={15} />}
               </div>
               <div className="rs-msg-body">
                 <div className="rs-role">
@@ -760,14 +787,14 @@ function App() {
               resumeSession(f.cwd, f.session_id, f.project, f.running)
             }
           >
-            ⟳ 一键继续
+            <RotateCw size={13} /> 一键继续
           </button>
           <button
             className="rs-fav on"
             title="从收藏夹移除"
             onClick={() => removeFav(f.session_id)}
           >
-            ★
+            <Star size={14} fill="currentColor" />
           </button>
         </div>
         {renderDetail(favAsSession(f), rowKey)}
@@ -1056,12 +1083,15 @@ function App() {
         <div className="brand">
           <img className="logo" src={logo} alt="ClaudeDeck" />
           <div>
-            <h1>ClaudeDeck</h1>
-            <p className="subtitle">Claude Code 会话监控</p>
+            <h1>Beacon</h1>
+            <p className="subtitle">Beacon for Claude Code</p>
           </div>
         </div>
         <div className="meta">
-          <span className="count">{liveCount} 个活动会话</span>
+          <span className="count">
+            {liveCount > 0 && <span className="beacon-dot" />}
+            {liveCount} 个活动会话
+          </span>
           <span className="sync">
             {lastSync ? `已同步 ${fmtIdle(Date.now() - lastSync)}` : "同步中…"}
           </span>
@@ -1071,13 +1101,15 @@ function App() {
               onClick={() => setShowSettings((v) => !v)}
               title="设置"
             >
-              ⚙
+              <Settings size={15} />
             </button>
             {showSettings && (
               <div className="settings-panel">
-                <h3>⚙️ 通用设置</h3>
+                <h3>
+                  <Settings size={13} /> 通用设置
+                </h3>
                 <p className="phone-hint">
-                  桌面通知与手机推送已移到「🔔 通知」标签页配置。
+                  桌面通知与手机推送已移到「通知」标签页配置。
                 </p>
                 <label className="row-opt">
                   <input
@@ -1094,7 +1126,9 @@ function App() {
                 </label>
 
                 <div className="about-section">
-                  <h3>🗂 会话记录保留</h3>
+                  <h3>
+                    <Archive size={13} /> 会话记录保留
+                  </h3>
                   <p className="phone-hint">
                     Claude Code 启动时会自动删除超过保留期的会话记录（官方默认
                     30 天，删除不可恢复）。当前：
@@ -1153,7 +1187,9 @@ function App() {
                 </div>
 
                 <div className="about-section">
-                  <h3>ℹ️ 关于 / 检查更新</h3>
+                  <h3>
+                    <Info size={13} /> 关于 / 检查更新
+                  </h3>
                   <p className="phone-hint">
                     当前版本 v{appVersion || "—"}。检查到新版会自动弹窗，安装版可一键下载安装（带签名验证）并自动重启；便携版去下载页手动更新。
                   </p>
@@ -1199,7 +1235,7 @@ function App() {
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             title={theme === "dark" ? "切换到浅色" : "切换到深色"}
           >
-            {theme === "dark" ? "☀" : "☾"}
+            {theme === "dark" ? <Sun size={15} /> : <Moon size={14} />}
           </button>
           <button
             className="refresh"
@@ -1267,7 +1303,9 @@ function App() {
         <div className="notify-wrap">
           <div className="notify-grid">
             <section className="notify-card">
-              <h3>💻 桌面通知</h3>
+              <h3>
+                <Monitor size={14} /> 桌面通知
+              </h3>
               <p className="phone-hint">
                 会话完成 / 等待输入时弹系统通知 + 提示音。app 需在运行（关窗到托盘也算）。
               </p>
@@ -1341,7 +1379,9 @@ function App() {
             </section>
 
             <section className="notify-card">
-              <h3>📱 手机推送</h3>
+              <h3>
+                <Smartphone size={14} /> 手机推送
+              </h3>
               <p className="phone-hint">
                 任务完成 / 等待授权时推到手机，应用不用开着。两个渠道各自有「启用」开关，可同时推也可只留一个。
                 {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
@@ -1355,7 +1395,9 @@ function App() {
 
               <div className="push-channel">
                 <div className="push-channel-title">
-                  <span>🍎 Bark（iPhone，免费）</span>
+                  <span>
+                    <Apple size={13} /> Bark（iPhone，免费）
+                  </span>
                   <label className="ch-toggle" title="启用该渠道">
                     <input
                       type="checkbox"
@@ -1388,7 +1430,9 @@ function App() {
 
               <div className="push-channel">
                 <div className="push-channel-title">
-                  <span>💬 PushPlus（微信）</span>
+                  <span>
+                    <MessageCircle size={13} /> PushPlus（微信）
+                  </span>
                   <label className="ch-toggle" title="启用该渠道">
                     <input
                       type="checkbox"
@@ -1473,7 +1517,7 @@ function App() {
           {launchMsg && <div className="banner ok">{launchMsg}</div>}
           <div className="recent-head">
             <span className="recent-hint">
-              最近 15 个会话（每页 5 个）+ 按项目目录分组 — 点开看最后几条消息，⟳ 一键续上原会话，☆ 收藏关机后再续
+              最近 15 个会话（每页 5 个）+ 按项目目录分组 — 点开看最后几条消息，一键续上原会话，收藏关机后再续
             </span>
             <div className="recent-actions">
               <div className="rs-search-box">
@@ -1532,7 +1576,7 @@ function App() {
               >
                 <h3 className="rs-section-title">
                   <span className="rs-caret">{favCollapsed ? "▸" : "▾"}</span>
-                  ⭐ 收藏夹 · {favs.length}
+                  <Star size={14} fill="currentColor" /> 收藏夹 · {favs.length}
                 </h3>
                 <span className="fav-hint">关机前收藏未聊完的会话，回来一键续上</span>
               </div>
@@ -1545,7 +1589,7 @@ function App() {
             <section className="rs-section">
               <div className="rs-section-bar">
                 <h3 className="rs-section-title">
-                  🔍 搜索「{query.trim()}」·{" "}
+                  <Search size={14} /> 搜索「{query.trim()}」·{" "}
                   {searching ? "搜索中…" : `${searchResults.length} 个结果`}
                 </h3>
               </div>
@@ -1588,7 +1632,7 @@ function App() {
               <section className="rs-section">
                 <div className="rs-section-bar">
                   <h3 className="rs-section-title">
-                    ⏱ 最近会话 · {recentTop15.length}
+                    <History size={14} /> 最近会话 · {recentTop15.length}
                   </h3>
                   {recentPageCount > 1 && (
                     <div className="rs-pager">
@@ -1624,7 +1668,7 @@ function App() {
               <section className="rs-section">
                 <div className="rs-section-bar">
                   <h3 className="rs-section-title">
-                    📁 按项目浏览 · {groups.length} 个目录
+                    <FolderOpen size={14} /> 按项目浏览 · {groups.length} 个目录
                   </h3>
                   <div className="rs-group-actions">
                     <button
