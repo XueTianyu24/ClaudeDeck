@@ -333,6 +333,45 @@ body {
   word-break: break-all;
 }
 
+/* ── 通知 tab 页（桌面通知 + 手机推送 两卡片）── */
+.notify-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.notify-grid {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  max-width: 900px;
+  margin: 4px auto 0;
+}
+.notify-card {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.notify-card h3 {
+  margin: 0 0 2px;
+  font-size: 14px;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .notify-grid {
+    flex-direction: column;
+  }
+  .notify-card {
+    width: 100%;
+    flex: none;
+  }
+}
+
 /* ── banner / empty ── */
 .banner.err {
   background: rgba(239, 68, 68, 0.12);
@@ -485,6 +524,32 @@ body {
   font-size: 13px;
   color: var(--dim);
 }
+/* 会话记录保留：输入行 + 快捷预设行 */
+.cleanup-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+.cleanup-row .num {
+  width: 70px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 13px;
+}
+.cleanup-row .test-btn {
+  margin-top: 0;
+  padding: 5px 12px;
+}
+.cleanup-presets {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
 .about-row {
   display: flex;
   align-items: center;
@@ -2777,6 +2842,20 @@ tr.muted {
 .fav-row.gone {
   opacity: 0.55;
   border-left-color: var(--dim);
+}
+/* 收藏行点开对话预览：详情块换行占满整行；信息区可点提示 */
+.fav-row {
+  flex-wrap: wrap;
+}
+.fav-row .fav-info {
+  cursor: pointer;
+}
+.fav-row.gone .fav-info {
+  cursor: default;
+}
+.fav-row .rs-detail {
+  width: 100%;
+  margin-top: 6px;
 }
 .fav-info {
   min-width: 0;

@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.0] - 2026-07-02
+
+### 新增 / 优化
+- **新增「🔔 通知」标签页**。桌面通知（完成/等待开关、阈值、静音、提示音时长、测试）与手机推送（Bark / PushPlus 双渠道、测试、安装/卸载）从右上角设置弹层搬到独立 tab，两张卡片并排（窄屏堆叠）。右上角 🔔 改 ⚙️「通用设置」，只留托盘行为 / 会话保留 / 关于与检查更新，并留了指引文案。
+- **会话记录保留期开关（⚙️ 通用设置 → 🗂 会话记录保留）**。Claude Code 官方默认**启动时删除 30 天前的会话记录**（`cleanupPeriodDays`）；现可在 app 里自主控制：自定义天数 + 快捷 90 天 / 1 年 / 永久（36500 天等效）/ 恢复默认，写入 `~/.claude/settings.json`（改前自动备份、其它配置原样保留），下次启动 claude 生效。面板明确警示「调小会删掉更早记录且不可恢复」。
+- **收藏夹会话可快速查看内容**。收藏行与最近会话行一致：点行展开「最近几条预览」+「📄 查看全文」进全文弹窗（复用同一套组件与后端命令）；悬空项（记录已删）不可点。
+- **「按项目浏览」一次列全 + 默认折叠 + 记忆展开状态**。后端 `list_recent_sessions` 支持 `limit=0` 全量，前端固定全量加载、移除「加载更多」按钮（每会话只读文件头尾小块，全量也轻）；分组**默认全折叠**只看项目列表，展开过哪些组记 localStorage、重启保持，新项目默认折叠。
+  - 关键改动：`src/App.tsx`（通知 tab 视图 + 设置弹层瘦身 + `renderDetail` 抽取共用 + `favAsSession` + `expandedGroups` 持久化 + `saveCleanup`）、`src/App.css`（`.notify-*` / `.cleanup-*` / 收藏行详情换行）、`src-tauri/src/lib.rs`（`get_cleanup_config` / `set_cleanup_period`、`list_recent_sessions` limit=0 全量）。
+
 ## [0.10.0] - 2026-07-02
 
 ### 新增 / 优化

@@ -690,7 +690,11 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
     if !root.exists() {
         return Ok(Vec::new());
     }
-    let cap = limit.unwrap_or(40).max(1);
+    // limit=0 表示不设上限（「按项目浏览」要一次列全）；每会话只读头尾小块，全量也轻。
+    let cap = match limit.unwrap_or(40) {
+        0 => usize::MAX,
+        n => n,
+    };
 
     // 运行中的 sessionId 集合 → 列表里标「运行中」并置顶。
     let running: HashSet<String> = read_session_views()
@@ -3232,6 +3236,70 @@ fn install_phone_hook(
     Ok(phone_hook_status())
 }
 
+// ── 会话记录保留期（CC cleanupPeriodDays）───────────────────────
+// CC 默认在启动时删除 30 天前的会话 jsonl（官方 `cleanupPeriodDays`，缺省 30、最小 1，
+// 无官方「关闭」值——「永久」用 36500 天等效）。这里读写 ~/.claude/settings.json 的该键，
+// 写回沿用手机推送 hook 的安全模式：先备份、解析校验、只动这一个键、其余配置原样保留。
+
+#[derive(Serialize)]
+struct CleanupConfig {
+    /// settings.json 里显式配置的天数；None = 未配置（走 CC 默认 30 天）
+    period_days: Option<u64>,
+}
+
+#[tauri::command]
+fn get_cleanup_config() -> Result<CleanupConfig, String> {
+    let settings = claude_dir()?.join("settings.json");
+    if !settings.exists() {
+        return Ok(CleanupConfig { period_days: None });
+    }
+    let s = fs::read_to_string(&settings).map_err(|e| format!("读 settings.json 失败: {e}"))?;
+    let root: Value =
+        serde_json::from_str(&s).map_err(|e| format!("settings.json 解析失败: {e}"))?;
+    Ok(CleanupConfig {
+        period_days: root.get("cleanupPeriodDays").and_then(|v| v.as_u64()),
+    })
+}
+
+/// 设置保留天数；days=None 表示删掉该键、恢复 CC 默认（30 天）。
+#[tauri::command]
+fn set_cleanup_period(days: Option<u64>) -> Result<(), String> {
+    if let Some(n) = days {
+        if n == 0 {
+            return Err("天数最小为 1（CC 官方限制）".into());
+        }
+        if n > 36500 {
+            return Err("天数上限 36500（= 100 年，等效永久）".into());
+        }
+    }
+    let settings = claude_dir()?.join("settings.json");
+    if settings.exists() {
+        let bak = claude_dir()?.join("settings.json.claudedeck-bak");
+        fs::copy(&settings, &bak).map_err(|e| format!("备份 settings.json 失败: {e}"))?;
+    }
+    let mut root: Value = if settings.exists() {
+        let s = fs::read_to_string(&settings).map_err(|e| format!("读 settings.json 失败: {e}"))?;
+        serde_json::from_str(&s)
+            .map_err(|e| format!("settings.json 不是合法 JSON，已中止以免破坏: {e}"))?
+    } else {
+        json!({})
+    };
+    let obj = root
+        .as_object_mut()
+        .ok_or("settings.json 顶层不是对象，已中止")?;
+    match days {
+        Some(n) => {
+            obj.insert("cleanupPeriodDays".into(), json!(n));
+        }
+        None => {
+            obj.remove("cleanupPeriodDays");
+        }
+    }
+    let pretty = serde_json::to_string_pretty(&root).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&settings, pretty).map_err(|e| format!("写 settings.json 失败: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn uninstall_phone_hook() -> Result<PhoneHookStatus, String> {
     let settings = claude_dir()?.join("settings.json");
@@ -3498,6 +3566,8 @@ pub fn run() {
             get_platform,
             check_for_update,
             force_quit_and_relaunch,
+            get_cleanup_config,
+            set_cleanup_period,
             list_memory_projects,
             list_memories,
             read_global_md,

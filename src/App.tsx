@@ -192,6 +192,25 @@ type SessionCost = {
 
 const DISMISS_KEY = "cd-update-dismissed"; // 记住「忽略此版本」，同版本不再打扰
 
+// 「按项目浏览」分组默认折叠；展开过哪些组记 localStorage，重启后保持。
+const GROUPS_EXPANDED_KEY = "cd-groups-expanded";
+function loadExpandedGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(GROUPS_EXPANDED_KEY);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch {
+    /* 坏数据当作全折叠 */
+  }
+  return new Set();
+}
+function saveExpandedGroups(next: Set<string>) {
+  try {
+    localStorage.setItem(GROUPS_EXPANDED_KEY, JSON.stringify([...next]));
+  } catch {
+    /* 存不上就只在本次会话生效 */
+  }
+}
+
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -203,19 +222,20 @@ function App() {
   const [settings, setSettings] = useState<NotifySettings>(loadSettings);
   const [showSettings, setShowSettings] = useState(false);
   const [view, setView] = useState<
-    "sessions" | "memory" | "skills" | "launcher" | "usage"
+    "sessions" | "memory" | "skills" | "launcher" | "usage" | "notify"
   >("sessions");
 
   // 最近会话列表（会话监控 tab 的新主体）
   const [recent, setRecent] = useState<RecentSession[]>([]);
   const [recentErr, setRecentErr] = useState<string | null>(null);
   const [recentLoading, setRecentLoading] = useState(false);
-  const [recentLimit, setRecentLimit] = useState(40);
   const [expanded, setExpanded] = useState<string | null>(null); // 展开中的会话行 key
   const [tail, setTail] = useState<SessionMsg[]>([]);
   const [tailLoading, setTailLoading] = useState(false);
   const [launchMsg, setLaunchMsg] = useState<string | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set()); // 折叠的项目分组 key
+  // 展开中的项目分组 key（默认全折叠，展开状态持久化）
+  const [expandedGroups, setExpandedGroups] =
+    useState<Set<string>>(loadExpandedGroups);
   const [recentPage, setRecentPage] = useState(0); // 「最近会话」当前页（每页 5 个）
   const [query, setQuery] = useState(""); // 会话检索关键词（后端全文检索）
   const [searchWeeks, setSearchWeeks] = useState(3); // 检索时间范围（周），0=全部
@@ -240,6 +260,11 @@ function App() {
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false); // 更新弹窗开关
   const [appVersion, setAppVersion] = useState(""); // 当前版本号（关于区显示）
+
+  // 会话记录保留期（CC cleanupPeriodDays；null = 未配置走默认 30 天）
+  const [cleanupDays, setCleanupDays] = useState<number | null>(null);
+  const [cleanupInput, setCleanupInput] = useState("30");
+  const [cleanupMsg, setCleanupMsg] = useState<string | null>(null);
 
   // 手机推送（多渠道 hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
@@ -331,10 +356,14 @@ function App() {
   }, []);
 
   // 最近会话：切到「会话监控」tab 时加载，不进 3s 轮询（历史会话不必高频刷）。
-  async function loadRecent(limit = recentLimit) {
+  // limit=0 = 全量：「按项目浏览」直接列全所有目录/会话，免去一次次点加载更多；
+  // 每会话后端只读头尾小块，全量也轻（比成本解析轻得多）。
+  async function loadRecent() {
     setRecentLoading(true);
     try {
-      setRecent(await invoke<RecentSession[]>("list_recent_sessions", { limit }));
+      setRecent(
+        await invoke<RecentSession[]>("list_recent_sessions", { limit: 0 })
+      );
       setRecentErr(null);
     } catch (e) {
       setRecentErr(String(e));
@@ -417,10 +446,11 @@ function App() {
   }
 
   function toggleGroup(key: string) {
-    setCollapsedGroups((prev) => {
+    setExpandedGroups((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
+      saveExpandedGroups(next);
       return next;
     });
   }
@@ -604,60 +634,95 @@ function App() {
             })()}
           </div>
         </div>
-        {expanded === rowKey && (
-          <div className="rs-detail">
-            <div className="rs-detail-bar">
-              <span className="rs-detail-hint">最近几条预览</span>
-              <button
-                className="rs-fulltext"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFullView(s);
-                }}
-              >
-                📄 查看全文
-              </button>
-            </div>
-            {tailLoading ? (
-              <p className="rs-loading">加载消息…</p>
-            ) : tail.length === 0 ? (
-              <p className="rs-loading">没有可显示的对话消息</p>
-            ) : (
-              tail.map((m, i) => (
-                <div key={i} className={`rs-msg ${m.role}`}>
-                  <div className={`cd-avatar ${m.role}`}>
-                    {m.role === "user" ? "🧑" : "🤖"}
-                  </div>
-                  <div className="rs-msg-body">
-                    <div className="rs-role">
-                      {m.role === "user" ? "你" : "Claude"}
-                    </div>
-                    <div className="rs-text">
-                      <Markdown>
-                        {m.text.length > 1500
-                          ? m.text.slice(0, 1500) + " …（略）"
-                          : m.text}
-                      </Markdown>
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
+        {renderDetail(s, rowKey)}
       </li>
     );
   }
 
-  // 渲染收藏夹里的一条（紧凑行：标题 + 项目 + 一键继续 + 取消收藏）
+  // 展开的会话详情（最近几条预览 + 查看全文入口）。最近会话行与收藏夹行共用。
+  function renderDetail(s: RecentSession, rowKey: string) {
+    if (expanded !== rowKey) return null;
+    return (
+      <div className="rs-detail">
+        <div className="rs-detail-bar">
+          <span className="rs-detail-hint">最近几条预览</span>
+          <button
+            className="rs-fulltext"
+            onClick={(e) => {
+              e.stopPropagation();
+              setFullView(s);
+            }}
+          >
+            📄 查看全文
+          </button>
+        </div>
+        {tailLoading ? (
+          <p className="rs-loading">加载消息…</p>
+        ) : tail.length === 0 ? (
+          <p className="rs-loading">没有可显示的对话消息</p>
+        ) : (
+          tail.map((m, i) => (
+            <div key={i} className={`rs-msg ${m.role}`}>
+              <div className={`cd-avatar ${m.role}`}>
+                {m.role === "user" ? "🧑" : "🤖"}
+              </div>
+              <div className="rs-msg-body">
+                <div className="rs-role">
+                  {m.role === "user" ? "你" : "Claude"}
+                </div>
+                <div className="rs-text">
+                  <Markdown>
+                    {m.text.length > 1500
+                      ? m.text.slice(0, 1500) + " …（略）"
+                      : m.text}
+                  </Markdown>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    );
+  }
+
+  // 收藏项 → RecentSession 形状（展开预览 / 查看全文共用同一套组件与后端命令）。
+  function favAsSession(f: FavoriteView): RecentSession {
+    return {
+      session_id: f.session_id,
+      file: f.file,
+      cwd: f.cwd,
+      project: f.project,
+      title: f.title,
+      last_prompt: null,
+      last_active_ms: f.added_at * 1000,
+      size_bytes: 0,
+      running: f.running,
+    };
+  }
+
+  // 渲染收藏夹里的一条（标题 + 项目 + 一键继续 + 取消收藏；点行展开对话预览）
   function renderFavRow(f: FavoriteView) {
+    const rowKey = `fav:${f.session_id}`;
     return (
       <li
-        key={`fav:${f.session_id}`}
-        className={`fav-row${f.missing ? " gone" : ""}`}
+        key={rowKey}
+        className={`fav-row${f.missing ? " gone" : ""}${
+          expanded === rowKey ? " open" : ""
+        }`}
       >
-        <div className="fav-info">
+        <div
+          className="fav-info"
+          onClick={() => {
+            if (!f.missing) toggleExpand(rowKey, favAsSession(f));
+          }}
+          title={f.missing ? undefined : "点击查看对话内容"}
+        >
           <div className="fav-titleline">
+            {!f.missing && (
+              <span className="rs-caret">
+                {expanded === rowKey ? "▾" : "▸"}
+              </span>
+            )}
             {f.running && (
               <span className="badge busy">
                 <i className="dot" />
@@ -698,6 +763,7 @@ function App() {
             ★
           </button>
         </div>
+        {renderDetail(favAsSession(f), rowKey)}
       </li>
     );
   }
@@ -878,7 +944,34 @@ function App() {
       .then(setAppVersion)
       .catch(() => {});
     checkUpdate(false);
+    invoke<{ period_days: number | null }>("get_cleanup_config")
+      .then((c) => {
+        setCleanupDays(c.period_days);
+        if (c.period_days) setCleanupInput(String(c.period_days));
+      })
+      .catch(() => {});
   }, []);
+
+  // 保存会话保留期；days=null 恢复 CC 默认（30 天）。删除发生在下次启动 claude 时。
+  async function saveCleanup(days: number | null) {
+    if (days !== null && (!Number.isFinite(days) || days < 1 || days > 36500)) {
+      setCleanupMsg("请输入 1–36500 之间的天数");
+      return;
+    }
+    try {
+      await invoke("set_cleanup_period", { days });
+      setCleanupDays(days);
+      if (days !== null) setCleanupInput(String(days));
+      else setCleanupInput("30");
+      setCleanupMsg(
+        days === null
+          ? "✅ 已恢复默认（保留 30 天），下次启动 claude 生效"
+          : `✅ 已设为保留 ${days} 天，下次启动 claude 生效`
+      );
+    } catch (e) {
+      setCleanupMsg("❌ " + String(e));
+    }
+  }
 
   function dismissUpdate() {
     if (update) localStorage.setItem(DISMISS_KEY, update.latest);
@@ -956,81 +1049,16 @@ function App() {
             <button
               className={`refresh ${showSettings ? "active" : ""}`}
               onClick={() => setShowSettings((v) => !v)}
-              title="通知设置"
+              title="设置"
             >
-              🔔
+              ⚙
             </button>
             {showSettings && (
               <div className="settings-panel">
-                <h3>通知设置</h3>
-                <label className="row-opt">
-                  <input
-                    type="checkbox"
-                    checked={settings.notifyDone}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, notifyDone: e.target.checked }))
-                    }
-                  />
-                  长任务完成时通知
-                </label>
-                <label className="row-opt indent">
-                  阈值
-                  <input
-                    type="number"
-                    min={0}
-                    className="num"
-                    value={settings.thresholdSec}
-                    onChange={(e) =>
-                      setSettings((s) => ({
-                        ...s,
-                        thresholdSec: Math.max(0, Number(e.target.value) || 0),
-                      }))
-                    }
-                  />
-                  秒以上
-                </label>
-                <label className="row-opt">
-                  <input
-                    type="checkbox"
-                    checked={settings.notifyWaiting}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, notifyWaiting: e.target.checked }))
-                    }
-                  />
-                  等待输入时通知
-                </label>
-                <label className="row-opt">
-                  <input
-                    type="checkbox"
-                    checked={settings.mute}
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, mute: e.target.checked }))
-                    }
-                  />
-                  静音（只弹窗不响铃）
-                </label>
-                <label className="row-opt indent">
-                  提示音时长
-                  <input
-                    type="number"
-                    min={0.5}
-                    step={0.5}
-                    className="num"
-                    disabled={settings.mute}
-                    value={settings.dingSec}
-                    onChange={(e) =>
-                      setSettings((s) => ({
-                        ...s,
-                        dingSec: Math.max(0.5, Number(e.target.value) || 0.5),
-                      }))
-                    }
-                  />
-                  秒
-                </label>
-                <button className="test-btn" onClick={testNotify}>
-                  发送测试通知
-                </button>
-
+                <h3>⚙️ 通用设置</h3>
+                <p className="phone-hint">
+                  桌面通知与手机推送已移到「🔔 通知」标签页配置。
+                </p>
                 <label className="row-opt">
                   <input
                     type="checkbox"
@@ -1044,6 +1072,65 @@ function App() {
                   />
                   关闭窗口时最小化到托盘（后台继续监控/通知）
                 </label>
+
+                <div className="about-section">
+                  <h3>🗂 会话记录保留</h3>
+                  <p className="phone-hint">
+                    Claude Code 启动时会自动删除超过保留期的会话记录（官方默认
+                    30 天，删除不可恢复）。当前：
+                    <b>
+                      {cleanupDays === null
+                        ? "默认（30 天）"
+                        : cleanupDays >= 36500
+                        ? "永久保留"
+                        : `保留 ${cleanupDays} 天`}
+                    </b>
+                  </p>
+                  <div className="cleanup-row">
+                    <input
+                      type="number"
+                      min={1}
+                      max={36500}
+                      className="num"
+                      value={cleanupInput}
+                      onChange={(e) => setCleanupInput(e.target.value)}
+                    />
+                    天
+                    <button
+                      className="test-btn"
+                      onClick={() => saveCleanup(Number(cleanupInput))}
+                    >
+                      保存
+                    </button>
+                  </div>
+                  <div className="cleanup-presets">
+                    <button className="rs-link-btn" onClick={() => saveCleanup(90)}>
+                      90 天
+                    </button>
+                    <button
+                      className="rs-link-btn"
+                      onClick={() => saveCleanup(365)}
+                    >
+                      1 年
+                    </button>
+                    <button
+                      className="rs-link-btn"
+                      onClick={() => saveCleanup(36500)}
+                    >
+                      永久
+                    </button>
+                    <button
+                      className="rs-link-btn"
+                      onClick={() => saveCleanup(null)}
+                    >
+                      恢复默认
+                    </button>
+                  </div>
+                  <p className="phone-hint">
+                    ⚠️ 调小保留期会在下次启动 claude 时删掉更早的会话记录，收藏夹里超期的会话也会失效。
+                  </p>
+                  {cleanupMsg && <p className="phone-msg">{cleanupMsg}</p>}
+                </div>
 
                 <div className="about-section">
                   <h3>ℹ️ 关于 / 检查更新</h3>
@@ -1062,125 +1149,6 @@ function App() {
                   </div>
                 </div>
 
-                <div className="phone-section">
-                  <h3>📱 手机推送</h3>
-                  <p className="phone-hint">
-                    任务完成 / 等待授权时推到手机，应用不用开着。两个渠道各自有「启用」开关，可同时推也可只留一个。
-                    {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
-                  </p>
-                  {env && !env.curl_available && (
-                    <p className="phone-msg">
-                      ⚠️ 未检测到 curl，手机推送将无法工作（Win10 1803
-                      以下需手动安装 curl；macOS / Linux 一般自带）
-                    </p>
-                  )}
-
-                  <div className="push-channel">
-                    <div className="push-channel-title">
-                      <span>🍎 Bark（iPhone，免费）</span>
-                      <label className="ch-toggle" title="启用该渠道">
-                        <input
-                          type="checkbox"
-                          checked={barkEnabled}
-                          disabled={!barkKey.trim()}
-                          onChange={(e) => setBarkEnabled(e.target.checked)}
-                        />
-                        启用
-                      </label>
-                    </div>
-                    <label className="field">
-                      <input
-                        type="text"
-                        className="keyinput"
-                        placeholder="api.day.app/ 后那串，不用可留空"
-                        value={barkKey}
-                        onChange={(e) => setBarkKey(e.target.value)}
-                      />
-                    </label>
-                    <div className="phone-btns">
-                      <button
-                        className="test-btn"
-                        disabled={phoneBusy || !barkKey.trim()}
-                        onClick={() => testPhone("bark")}
-                      >
-                        测试 Bark
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="push-channel">
-                    <div className="push-channel-title">
-                      <span>💬 PushPlus（微信）</span>
-                      <label className="ch-toggle" title="启用该渠道">
-                        <input
-                          type="checkbox"
-                          checked={pushplusEnabled}
-                          disabled={!pushplusToken.trim()}
-                          onChange={(e) => setPushplusEnabled(e.target.checked)}
-                        />
-                        启用
-                      </label>
-                    </div>
-                    <label className="field">
-                      <input
-                        type="text"
-                        className="keyinput"
-                        placeholder="pushplus.plus 的 token，不用可留空"
-                        value={pushplusToken}
-                        onChange={(e) => setPushplusToken(e.target.value)}
-                      />
-                    </label>
-                    <p className="phone-hint">{PUSHPLUS_HINT}</p>
-                    <div className="phone-btns">
-                      <button
-                        className="test-btn"
-                        disabled={phoneBusy || !pushplusToken.trim()}
-                        onClick={() => testPhone("pushplus")}
-                      >
-                        测试微信
-                      </button>
-                    </div>
-                  </div>
-
-                  <label className="row-opt indent">
-                    完成阈值
-                    <input
-                      type="number"
-                      min={0}
-                      className="num"
-                      value={phoneThresh}
-                      onChange={(e) =>
-                        setPhoneThresh(Math.max(0, Number(e.target.value) || 0))
-                      }
-                    />
-                    秒以上
-                  </label>
-                  <div className="phone-btns">
-                    <button
-                      className="test-btn"
-                      disabled={
-                        phoneBusy ||
-                        !(
-                          (barkKey.trim() && barkEnabled) ||
-                          (pushplusToken.trim() && pushplusEnabled)
-                        )
-                      }
-                      onClick={installPhone}
-                    >
-                      {phone?.installed ? "更新已配置渠道" : "安装"}
-                    </button>
-                    {phone?.installed && (
-                      <button
-                        className="test-btn danger"
-                        disabled={phoneBusy}
-                        onClick={uninstallPhone}
-                      >
-                        卸载
-                      </button>
-                    )}
-                  </div>
-                  {phoneMsg && <p className="phone-msg">{phoneMsg}</p>}
-                </div>
               </div>
             )}
           </div>
@@ -1241,12 +1209,216 @@ function App() {
         >
           用量计费
         </button>
+        <button
+          className={`view-tab ${view === "notify" ? "active" : ""}`}
+          onClick={() => setView("notify")}
+        >
+          通知
+        </button>
       </div>
 
       {view === "launcher" ? (
         <LauncherView />
       ) : view === "usage" ? (
         <UsageView />
+      ) : view === "notify" ? (
+        <div className="notify-wrap">
+          <div className="notify-grid">
+            <section className="notify-card">
+              <h3>💻 桌面通知</h3>
+              <p className="phone-hint">
+                会话完成 / 等待输入时弹系统通知 + 提示音。app 需在运行（关窗到托盘也算）。
+              </p>
+              <label className="row-opt">
+                <input
+                  type="checkbox"
+                  checked={settings.notifyDone}
+                  onChange={(e) =>
+                    setSettings((s) => ({ ...s, notifyDone: e.target.checked }))
+                  }
+                />
+                长任务完成时通知
+              </label>
+              <label className="row-opt indent">
+                阈值
+                <input
+                  type="number"
+                  min={0}
+                  className="num"
+                  value={settings.thresholdSec}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      thresholdSec: Math.max(0, Number(e.target.value) || 0),
+                    }))
+                  }
+                />
+                秒以上
+              </label>
+              <label className="row-opt">
+                <input
+                  type="checkbox"
+                  checked={settings.notifyWaiting}
+                  onChange={(e) =>
+                    setSettings((s) => ({ ...s, notifyWaiting: e.target.checked }))
+                  }
+                />
+                等待输入时通知
+              </label>
+              <label className="row-opt">
+                <input
+                  type="checkbox"
+                  checked={settings.mute}
+                  onChange={(e) =>
+                    setSettings((s) => ({ ...s, mute: e.target.checked }))
+                  }
+                />
+                静音（只弹窗不响铃）
+              </label>
+              <label className="row-opt indent">
+                提示音时长
+                <input
+                  type="number"
+                  min={0.5}
+                  step={0.5}
+                  className="num"
+                  disabled={settings.mute}
+                  value={settings.dingSec}
+                  onChange={(e) =>
+                    setSettings((s) => ({
+                      ...s,
+                      dingSec: Math.max(0.5, Number(e.target.value) || 0.5),
+                    }))
+                  }
+                />
+                秒
+              </label>
+              <button className="test-btn" onClick={testNotify}>
+                发送测试通知
+              </button>
+            </section>
+
+            <section className="notify-card">
+              <h3>📱 手机推送</h3>
+              <p className="phone-hint">
+                任务完成 / 等待授权时推到手机，应用不用开着。两个渠道各自有「启用」开关，可同时推也可只留一个。
+                {phone?.installed ? " 状态：已安装 ✅" : " 状态：未安装"}
+              </p>
+              {env && !env.curl_available && (
+                <p className="phone-msg">
+                  ⚠️ 未检测到 curl，手机推送将无法工作（Win10 1803
+                  以下需手动安装 curl；macOS / Linux 一般自带）
+                </p>
+              )}
+
+              <div className="push-channel">
+                <div className="push-channel-title">
+                  <span>🍎 Bark（iPhone，免费）</span>
+                  <label className="ch-toggle" title="启用该渠道">
+                    <input
+                      type="checkbox"
+                      checked={barkEnabled}
+                      disabled={!barkKey.trim()}
+                      onChange={(e) => setBarkEnabled(e.target.checked)}
+                    />
+                    启用
+                  </label>
+                </div>
+                <label className="field">
+                  <input
+                    type="text"
+                    className="keyinput"
+                    placeholder="api.day.app/ 后那串，不用可留空"
+                    value={barkKey}
+                    onChange={(e) => setBarkKey(e.target.value)}
+                  />
+                </label>
+                <div className="phone-btns">
+                  <button
+                    className="test-btn"
+                    disabled={phoneBusy || !barkKey.trim()}
+                    onClick={() => testPhone("bark")}
+                  >
+                    测试 Bark
+                  </button>
+                </div>
+              </div>
+
+              <div className="push-channel">
+                <div className="push-channel-title">
+                  <span>💬 PushPlus（微信）</span>
+                  <label className="ch-toggle" title="启用该渠道">
+                    <input
+                      type="checkbox"
+                      checked={pushplusEnabled}
+                      disabled={!pushplusToken.trim()}
+                      onChange={(e) => setPushplusEnabled(e.target.checked)}
+                    />
+                    启用
+                  </label>
+                </div>
+                <label className="field">
+                  <input
+                    type="text"
+                    className="keyinput"
+                    placeholder="pushplus.plus 的 token，不用可留空"
+                    value={pushplusToken}
+                    onChange={(e) => setPushplusToken(e.target.value)}
+                  />
+                </label>
+                <p className="phone-hint">{PUSHPLUS_HINT}</p>
+                <div className="phone-btns">
+                  <button
+                    className="test-btn"
+                    disabled={phoneBusy || !pushplusToken.trim()}
+                    onClick={() => testPhone("pushplus")}
+                  >
+                    测试微信
+                  </button>
+                </div>
+              </div>
+
+              <label className="row-opt indent">
+                完成阈值
+                <input
+                  type="number"
+                  min={0}
+                  className="num"
+                  value={phoneThresh}
+                  onChange={(e) =>
+                    setPhoneThresh(Math.max(0, Number(e.target.value) || 0))
+                  }
+                />
+                秒以上
+              </label>
+              <div className="phone-btns">
+                <button
+                  className="test-btn"
+                  disabled={
+                    phoneBusy ||
+                    !(
+                      (barkKey.trim() && barkEnabled) ||
+                      (pushplusToken.trim() && pushplusEnabled)
+                    )
+                  }
+                  onClick={installPhone}
+                >
+                  {phone?.installed ? "更新已配置渠道" : "安装"}
+                </button>
+                {phone?.installed && (
+                  <button
+                    className="test-btn danger"
+                    disabled={phoneBusy}
+                    onClick={uninstallPhone}
+                  >
+                    卸载
+                  </button>
+                )}
+              </div>
+              {phoneMsg && <p className="phone-msg">{phoneMsg}</p>}
+            </section>
+          </div>
+        </div>
       ) : view === "skills" ? (
         <SkillView />
       ) : view === "memory" ? (
@@ -1415,15 +1587,20 @@ function App() {
                   <div className="rs-group-actions">
                     <button
                       className="rs-link-btn"
-                      onClick={() => setCollapsedGroups(new Set())}
+                      onClick={() => {
+                        const all = new Set(groups.map((g) => g.key));
+                        saveExpandedGroups(all);
+                        setExpandedGroups(all);
+                      }}
                     >
                       全部展开
                     </button>
                     <button
                       className="rs-link-btn"
-                      onClick={() =>
-                        setCollapsedGroups(new Set(groups.map((g) => g.key)))
-                      }
+                      onClick={() => {
+                        saveExpandedGroups(new Set());
+                        setExpandedGroups(new Set());
+                      }}
                     >
                       全部折叠
                     </button>
@@ -1436,7 +1613,7 @@ function App() {
                       onClick={() => toggleGroup(g.key)}
                     >
                       <span className="rs-caret">
-                        {collapsedGroups.has(g.key) ? "▸" : "▾"}
+                        {expandedGroups.has(g.key) ? "▾" : "▸"}
                       </span>
                       {g.running && (
                         <span className="badge busy">
@@ -1452,7 +1629,7 @@ function App() {
                         </span>
                       )}
                     </div>
-                    {!collapsedGroups.has(g.key) && (
+                    {expandedGroups.has(g.key) && (
                       <ul className="rs-list rs-group-list">
                         {g.items.map((s) =>
                           renderRow(s, `grp:${s.file}`, false)
@@ -1462,20 +1639,6 @@ function App() {
                   </div>
                 ))}
               </section>
-              {recent.length >= recentLimit && (
-                <div className="rs-more">
-                  <button
-                    className="lc-btn"
-                    onClick={() => {
-                      const n = recentLimit + 40;
-                      setRecentLimit(n);
-                      loadRecent(n);
-                    }}
-                  >
-                    加载更多
-                  </button>
-                </div>
-              )}
             </>
           )}
         </div>
