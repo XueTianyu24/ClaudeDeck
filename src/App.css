@@ -333,6 +333,92 @@ body {
   word-break: break-all;
 }
 
+/* ── 用量计费：周期行展开的计费详情 ── */
+.usage-period-row {
+  cursor: pointer;
+}
+.usage-period-row.open td {
+  background: var(--panel-2);
+}
+.usage-caret {
+  color: var(--dim);
+  font-size: 11px;
+  display: inline-block;
+  width: 14px;
+}
+.usage-detail-tr td {
+  padding: 0 !important;
+  background: var(--panel-2);
+}
+.usage-detail {
+  display: flex;
+  gap: 24px;
+  padding: 10px 14px 12px 28px;
+  align-items: flex-start;
+}
+.usage-detail-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.usage-detail-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dim);
+  margin-bottom: 2px;
+}
+.usage-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.usage-detail-name {
+  flex: none;
+  width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-detail-id {
+  color: var(--dim);
+  font-size: 10.5px;
+  margin-left: 4px;
+}
+.usage-detail-bar {
+  flex: 1;
+  min-width: 30px;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.usage-detail-bar-fill {
+  height: 100%;
+  background: var(--green);
+  border-radius: 3px;
+}
+.usage-detail-bar-fill.sess {
+  background: var(--blue, #4a9eff);
+}
+.usage-detail-meta {
+  flex: none;
+  font-size: 10.5px;
+}
+.usage-detail-more {
+  font-size: 11px;
+  padding-left: 2px;
+}
+@media (max-width: 860px) {
+  .usage-detail {
+    flex-direction: column;
+    gap: 14px;
+  }
+}
+
 /* ── 通知 tab 页（桌面通知 + 手机推送 两卡片）── */
 .notify-wrap {
   flex: 1;

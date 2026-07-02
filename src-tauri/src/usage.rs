@@ -13,7 +13,7 @@
 //!   - 跳过 `<synthetic>` 与无 usage / 无 model 的行。
 //!   - 模型名做分隔符归一化（`.`/`@`→`-`、剥 provider 前缀）+ 族 fallback。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
@@ -259,6 +259,16 @@ pub(crate) struct SessionUsage {
     has_unpriced: bool,
 }
 
+/// 日内拆分条目（key = 模型名或 session_id）。周期速览行展开的「计费详情」用；
+/// 周 / 月的详情由前端把区间内各日的条目按 key 再聚合。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DaySlice {
+    key: String,
+    total_tokens: u64,
+    cost: f64,
+    message_count: u64,
+}
+
 /// 单日用量聚合（本地时区日期）。周 / 月速览由前端在此基础上再聚合。
 #[derive(Debug, Serialize)]
 pub(crate) struct DayUsage {
@@ -273,6 +283,10 @@ pub(crate) struct DayUsage {
     cost: f64,
     message_count: u64,
     models: Vec<String>,
+    /// 当日按模型拆分（cost 高→低）
+    by_model: Vec<DaySlice>,
+    /// 当日按会话拆分（cost 高→低；前端用 session_id 关联会话明细拿项目名）
+    by_session: Vec<DaySlice>,
 }
 
 /// 单模型用量聚合（跨所有会话）。
@@ -325,6 +339,8 @@ struct DayAcc {
     cost: f64,
     message_count: u64,
     models: Vec<String>,
+    by_model: HashMap<String, Agg>,
+    by_session: HashMap<String, Agg>,
 }
 
 /// 扫 `~/.claude/projects/*/*.jsonl`，产出用量报告。
@@ -450,6 +466,15 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
                     if !d.models.contains(&model) {
                         d.models.push(model.clone());
                     }
+                    // 当日按模型 / 按会话拆分（周期速览展开详情用）
+                    let bm = d.by_model.entry(model.clone()).or_default();
+                    bm.tokens.add(&tok);
+                    bm.cost += cost;
+                    bm.message_count += 1;
+                    let bs = d.by_session.entry(session_id.clone()).or_default();
+                    bs.tokens.add(&tok);
+                    bs.cost += cost;
+                    bs.message_count += 1;
                 }
 
                 if let Some(ts) = entry.timestamp {
@@ -510,6 +535,19 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
     }
 
     // 日桶（按日期升序，前端再聚合周 / 月）
+    let slices = |m: HashMap<String, Agg>| -> Vec<DaySlice> {
+        let mut v: Vec<DaySlice> = m
+            .into_iter()
+            .map(|(key, a)| DaySlice {
+                key,
+                total_tokens: a.tokens.total(),
+                cost: a.cost,
+                message_count: a.message_count,
+            })
+            .collect();
+        v.sort_by(|a, b| b.cost.partial_cmp(&a.cost).unwrap_or(std::cmp::Ordering::Equal));
+        v
+    };
     let mut daily_out: Vec<DayUsage> = daily
         .into_iter()
         .map(|(date, d)| DayUsage {
@@ -523,6 +561,8 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
             cost: d.cost,
             message_count: d.message_count,
             models: d.models,
+            by_model: slices(d.by_model),
+            by_session: slices(d.by_session),
         })
         .collect();
     daily_out.sort_by(|a, b| a.date.cmp(&b.date));

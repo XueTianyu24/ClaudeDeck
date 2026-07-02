@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CostTrendChart, ModelCostDonut } from "./UsageCharts";
 import { fmtCost, fmtTokens, shortModel } from "./usageFormat";
@@ -46,6 +46,14 @@ type RateRow = {
   cache_read: number;
 };
 
+// 日内拆分条目（key = 模型名或 session_id），周期行展开的计费详情用
+type DaySlice = {
+  key: string;
+  total_tokens: number;
+  cost: number;
+  message_count: number;
+};
+
 type DayUsage = {
   date: string; // YYYY-MM-DD（本地时区）
   input: number;
@@ -57,6 +65,8 @@ type DayUsage = {
   cost: number;
   message_count: number;
   models: string[];
+  by_model: DaySlice[];
+  by_session: DaySlice[];
 };
 
 type UsageReport = {
@@ -101,7 +111,24 @@ type PeriodRow = {
   cost: number;
   message_count: number;
   models: string[];
+  /// 周期内按模型 / 按会话拆分（cost 高→低；日=后端原样，周/月=跨日聚合）
+  by_model: DaySlice[];
+  by_session: DaySlice[];
 };
+
+/** 把一天的拆分条目并入周期累加 map（按 key 聚合）。 */
+function mergeSlices(into: Map<string, DaySlice>, from: DaySlice[] | undefined) {
+  for (const s of from ?? []) {
+    const e = into.get(s.key);
+    if (e) {
+      e.total_tokens += s.total_tokens;
+      e.cost += s.cost;
+      e.message_count += s.message_count;
+    } else {
+      into.set(s.key, { ...s });
+    }
+  }
+}
 
 const SESSION_PAGE_SIZE = 12;
 const PERIOD_PAGE_SIZE = 10;
@@ -156,9 +183,12 @@ function mondayOf(dateStr: string): string {
   return ymd(d);
 }
 
-/** 把后端日桶按 日/周/月 再聚合，返回按时间倒序的周期行。 */
+/** 把后端日桶按 日/周/月 再聚合，返回按时间倒序的周期行（含按模型/按会话拆分）。 */
 function groupByPeriod(daily: DayUsage[], mode: Period): PeriodRow[] {
-  const map = new Map<string, PeriodRow>();
+  const map = new Map<
+    string,
+    { row: PeriodRow; bm: Map<string, DaySlice>; bs: Map<string, DaySlice> }
+  >();
   for (const d of daily) {
     let key: string;
     let label: string;
@@ -175,23 +205,30 @@ function groupByPeriod(daily: DayUsage[], mode: Period): PeriodRow[] {
       const [y, m] = key.split("-");
       label = `${y}年${Number(m)}月`;
     }
-    let row = map.get(key);
-    if (!row) {
-      row = {
-        key,
-        label,
-        input: 0,
-        output: 0,
-        cache_read: 0,
-        cache_write_5m: 0,
-        cache_write_1h: 0,
-        total_tokens: 0,
-        cost: 0,
-        message_count: 0,
-        models: [],
+    let acc = map.get(key);
+    if (!acc) {
+      acc = {
+        row: {
+          key,
+          label,
+          input: 0,
+          output: 0,
+          cache_read: 0,
+          cache_write_5m: 0,
+          cache_write_1h: 0,
+          total_tokens: 0,
+          cost: 0,
+          message_count: 0,
+          models: [],
+          by_model: [],
+          by_session: [],
+        },
+        bm: new Map(),
+        bs: new Map(),
       };
-      map.set(key, row);
+      map.set(key, acc);
     }
+    const row = acc.row;
     row.input += d.input;
     row.output += d.output;
     row.cache_read += d.cache_read;
@@ -201,8 +238,17 @@ function groupByPeriod(daily: DayUsage[], mode: Period): PeriodRow[] {
     row.cost += d.cost;
     row.message_count += d.message_count;
     for (const m of d.models) if (!row.models.includes(m)) row.models.push(m);
+    mergeSlices(acc.bm, d.by_model);
+    mergeSlices(acc.bs, d.by_session);
   }
-  return [...map.values()].sort((a, b) => (a.key < b.key ? 1 : -1));
+  const byCostDesc = (a: DaySlice, b: DaySlice) => b.cost - a.cost;
+  return [...map.values()]
+    .map(({ row, bm, bs }) => ({
+      ...row,
+      by_model: [...bm.values()].sort(byCostDesc),
+      by_session: [...bs.values()].sort(byCostDesc),
+    }))
+    .sort((a, b) => (a.key < b.key ? 1 : -1));
 }
 
 export default function UsageView() {
@@ -212,6 +258,8 @@ export default function UsageView() {
   const [period, setPeriod] = useState<Period>("day");
   const [sessionPage, setSessionPage] = useState(0);
   const [periodPage, setPeriodPage] = useState(0);
+  // 展开计费详情的周期行 key（点行切换；切 日/周/月 或重扫后收起）
+  const [expandedPeriod, setExpandedPeriod] = useState<string | null>(null);
   const [showRates, setShowRates] = useState(false);
   const [rates, setRates] = useState<RateRow[] | null>(null);
 
@@ -255,13 +303,23 @@ export default function UsageView() {
     [periodRows],
   );
 
-  // 切日/周/月时回到第 1 页
-  useEffect(() => setPeriodPage(0), [period]);
+  // 切日/周/月时回到第 1 页并收起详情
+  useEffect(() => {
+    setPeriodPage(0);
+    setExpandedPeriod(null);
+  }, [period]);
   // 数据重扫后两张表都回到第 1 页
   useEffect(() => {
     setPeriodPage(0);
     setSessionPage(0);
+    setExpandedPeriod(null);
   }, [report]);
+
+  // session_id → 会话（周期详情里给会话拆分显示项目名）
+  const sessById = useMemo(
+    () => new Map((report?.sessions ?? []).map((s) => [s.session_id, s])),
+    [report],
+  );
 
   const periodPageCount = Math.max(1, Math.ceil(periodRows.length / PERIOD_PAGE_SIZE));
   const periodSlice = useMemo(
@@ -408,27 +466,124 @@ export default function UsageView() {
                 </tr>
               </thead>
               <tbody>
-                {periodSlice.map((p) => (
-                  <tr key={p.key}>
-                    <td className="usage-period-label">{p.label}</td>
-                    <td className="num mono">{fmtTokens(p.input)}</td>
-                    <td className="num mono">{fmtTokens(p.output)}</td>
-                    <td className="num mono">
-                      {fmtTokens(p.cache_read + p.cache_write_5m + p.cache_write_1h)}
-                    </td>
-                    <td className="num mono">{fmtTokens(p.total_tokens)}</td>
-                    <td className="num mono dim">{p.message_count}</td>
-                    <td className="usage-period-cost-cell">
-                      <div className="usage-period-bar">
-                        <div
-                          className="usage-period-bar-fill"
-                          style={{ width: `${(p.cost / maxPeriodCost) * 100}%` }}
-                        />
-                      </div>
-                      <span className="usage-cost mono">{fmtCost(p.cost)}</span>
-                    </td>
-                  </tr>
-                ))}
+                {periodSlice.map((p) => {
+                  const open = expandedPeriod === p.key;
+                  const SESSION_TOP = 10;
+                  const restSess = p.by_session.slice(SESSION_TOP);
+                  const restCost = restSess.reduce((a, s) => a + s.cost, 0);
+                  const maxSliceCost = Math.max(
+                    1e-9,
+                    p.by_model[0]?.cost ?? 0,
+                    p.by_session[0]?.cost ?? 0,
+                  );
+                  return (
+                    <Fragment key={p.key}>
+                      <tr
+                        className={`usage-period-row ${open ? "open" : ""}`}
+                        onClick={() =>
+                          setExpandedPeriod(open ? null : p.key)
+                        }
+                        title="点击展开/收起计费详情"
+                      >
+                        <td className="usage-period-label">
+                          <span className="usage-caret">{open ? "▾" : "▸"}</span>
+                          {p.label}
+                        </td>
+                        <td className="num mono">{fmtTokens(p.input)}</td>
+                        <td className="num mono">{fmtTokens(p.output)}</td>
+                        <td className="num mono">
+                          {fmtTokens(p.cache_read + p.cache_write_5m + p.cache_write_1h)}
+                        </td>
+                        <td className="num mono">{fmtTokens(p.total_tokens)}</td>
+                        <td className="num mono dim">{p.message_count}</td>
+                        <td className="usage-period-cost-cell">
+                          <div className="usage-period-bar">
+                            <div
+                              className="usage-period-bar-fill"
+                              style={{ width: `${(p.cost / maxPeriodCost) * 100}%` }}
+                            />
+                          </div>
+                          <span className="usage-cost mono">{fmtCost(p.cost)}</span>
+                        </td>
+                      </tr>
+                      {open && (
+                        <tr className="usage-detail-tr">
+                          <td colSpan={7}>
+                            <div className="usage-detail">
+                              <div className="usage-detail-col">
+                                <div className="usage-detail-title">按模型</div>
+                                {p.by_model.map((s) => (
+                                  <div className="usage-detail-row" key={s.key}>
+                                    <span
+                                      className="usage-detail-name mono"
+                                      title={s.key}
+                                    >
+                                      {shortModel(s.key)}
+                                    </span>
+                                    <div className="usage-detail-bar">
+                                      <div
+                                        className="usage-detail-bar-fill"
+                                        style={{
+                                          width: `${(s.cost / maxSliceCost) * 100}%`,
+                                        }}
+                                      />
+                                    </div>
+                                    <span className="usage-detail-meta mono dim">
+                                      {fmtTokens(s.total_tokens)} · {s.message_count} 条
+                                    </span>
+                                    <span className="usage-cost mono">
+                                      {fmtCost(s.cost)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                              <div className="usage-detail-col">
+                                <div className="usage-detail-title">
+                                  按会话（费用前 {Math.min(SESSION_TOP, p.by_session.length)}）
+                                </div>
+                                {p.by_session.slice(0, SESSION_TOP).map((s) => {
+                                  const sess = sessById.get(s.key);
+                                  return (
+                                    <div className="usage-detail-row" key={s.key}>
+                                      <span
+                                        className="usage-detail-name"
+                                        title={sess?.cwd || s.key}
+                                      >
+                                        {sess?.project_label || s.key}
+                                        <span className="usage-detail-id mono">
+                                          #{s.key.slice(0, 8)}
+                                        </span>
+                                      </span>
+                                      <div className="usage-detail-bar">
+                                        <div
+                                          className="usage-detail-bar-fill sess"
+                                          style={{
+                                            width: `${(s.cost / maxSliceCost) * 100}%`,
+                                          }}
+                                        />
+                                      </div>
+                                      <span className="usage-detail-meta mono dim">
+                                        {fmtTokens(s.total_tokens)} · {s.message_count} 条
+                                      </span>
+                                      <span className="usage-cost mono">
+                                        {fmtCost(s.cost)}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                                {restSess.length > 0 && (
+                                  <div className="usage-detail-more dim">
+                                    … 还有 {restSess.length} 个会话，合计 {fmtCost(restCost)}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
