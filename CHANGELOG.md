@@ -5,6 +5,15 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.11.1] - 2026-07-02
+
+### 修复 / 优化
+- **自动更新在国内网络下的可靠性**。更新源与安装包在 GitHub 资产 CDN（`objects.githubusercontent.com`），国内直连时通时断（实测多次检查才成功一次）：
+  - **⚙️ 关于区新增「更新代理」**：填本地代理（如 `http://127.0.0.1:7897`，与启动器代理一致即可）后，检查更新与下载安装都稳定走代理（官方插件原生 proxy 支持，存 localStorage）。
+  - **检查失败自动重试一次**（隔 2s），瞬时抖动不再直接退化成「打开下载页」；失败原因记录到控制台。
+  - 新增隐藏诊断 `ClaudeDeck.exe --check-update-cli`：直接跑官方 updater 检查，结果写 `%TEMP%\claudedeck-update-check.log` 后退出，排查更新问题用。
+  - 关键改动：`src/App.tsx`（代理输入 + 重试 + `UPDATE_PROXY_KEY`）、`src-tauri/src/lib.rs`（诊断入口）。
+
 ## [0.11.0] - 2026-07-02
 
 ### 新增 / 优化
