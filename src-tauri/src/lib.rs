@@ -462,132 +462,89 @@ fn check_for_update() -> Result<UpdateInfo, String> {
     })
 }
 
-// ── 自动更新：下载 + 安装（Windows）─────────────────────────────
-// 轻量自实现（不引签名密钥 / latest.json）：curl 下载 GitHub release 的 `-setup.exe` 到临时目录，
-// 前端轮询「已下字节 / 总字节」画进度条；下完拉起 NSIS 安装程序（每用户安装、无 UAC、装完默认重启
-// 应用）后退出 app。临时目录符合「下载即用、用完即弃」的管道用途。
-#[derive(Default)]
-struct UpdateDownload {
-    inner: Mutex<Option<DlJob>>,
-}
-struct DlJob {
-    path: PathBuf,
-    total: u64,
-    child: std::process::Child,
-    done: bool,
-    ok: bool,
-    err: Option<String>,
-}
+// ── 自动更新：官方 tauri-plugin-updater（v0.10.0 起）───────────────
+// 检查/下载/安装走官方插件（latest.json + minisign 签名验证），前端见 UpdateModal.tsx。
+// v0.9.12 的 curl 自实现下载器已退役；check_for_update 保留作兜底（插件检查失败时
+// 退回「打开下载页」）。下面是 relaunch 兜底（参考 claude-code-history-viewer）。
 
-#[derive(Serialize)]
-struct DlProgress {
-    downloaded: u64,
-    total: u64,
-    done: bool,
-    ok: bool,
-    err: Option<String>,
-}
-
-/// 开始下载安装包：起一个 curl 子进程写到临时文件，立即返回；前端轮询进度。
+/// 强退当前进程并由游离辅助进程拉起新版。
+///
+/// 官方 `relaunch()` 在 macOS 有已知上游 bug（tauri#13923/#11392/#8472）：下载安装成功
+/// 但重启步骤失败，用户困在旧二进制上。辅助进程**必须等父进程完全退出**再拉起——
+/// 否则 single-instance 插件会把新进程当重复启动、唤回旧窗口，更新不生效。
 #[tauri::command]
-fn start_update_download(
-    state: tauri::State<UpdateDownload>,
-    url: String,
-    file_name: String,
-    total: u64,
-) -> Result<(), String> {
-    if url.trim().is_empty() {
-        return Err("下载地址为空".into());
-    }
-    // 安全：文件名只允许安装包基本字符（挡路径穿越），且必须是 .exe。
-    let safe = file_name.trim();
-    if safe.is_empty()
-        || !safe
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        || !safe.ends_with(".exe")
+fn force_quit_and_relaunch(app: tauri::AppHandle) -> Result<(), String> {
+    let current_exe =
+        std::env::current_exe().map_err(|e| format!("获取当前程序路径失败: {e}"))?;
+    let ppid = std::process::id();
+
+    #[cfg(windows)]
     {
-        return Err("非法的安装包文件名".into());
+        use std::os::windows::process::CommandExt;
+        // https://learn.microsoft.com/en-us/windows/win32/procthread/process-creation-flags
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        // 用 PowerShell Wait-Process 等父进程退出再 Start-Process。不用 `cmd /C start`：
+        // cmd 在双引号内也做 %VAR% 展开，路径含字面 `%` 会被破坏。
+        let exe_ps = current_exe.to_string_lossy().replace('\'', "''");
+        let ps_cmd = format!(
+            "Wait-Process -Id {ppid} -ErrorAction SilentlyContinue -Timeout 30; \
+             Start-Sleep -Milliseconds 300; \
+             Start-Process -FilePath '{exe_ps}'"
+        );
+        Command::new("powershell")
+            .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps_cmd])
+            .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动重启辅助进程失败: {e}"))?;
     }
-    let dir = std::env::temp_dir().join("ClaudeDeck-update");
-    fs::create_dir_all(&dir).map_err(|e| format!("创建临时目录失败: {e}"))?;
-    let path = dir.join(safe);
-    let _ = fs::remove_file(&path); // 清掉上次残留，避免旧文件干扰大小判定
-    let child = silent_command(CURL_BIN)
-        .args([
-            "-fL",
-            "--max-time",
-            "300",
-            "-o",
-            path.to_string_lossy().as_ref(),
-            &url,
-        ])
-        .spawn()
-        .map_err(|e| format!("启动下载失败: {e}"))?;
-    *state.inner.lock().unwrap() = Some(DlJob {
-        path,
-        total,
-        child,
-        done: false,
-        ok: false,
-        err: None,
+
+    #[cfg(target_os = "macos")]
+    {
+        // 找 .app bundle 根，等父进程退出后 open -n 重开。
+        let app_bundle = current_exe
+            .ancestors()
+            .find(|p| p.extension().and_then(|s| s.to_str()) == Some("app"))
+            .ok_or_else(|| "未找到 .app bundle".to_string())?;
+        let bundle_escaped = format!("'{}'", app_bundle.to_string_lossy().replace('\'', "'\\''"));
+        let cmd = format!(
+            "i=0; while kill -0 {ppid} 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; sleep 0.3; open -n {bundle_escaped}"
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动重启辅助进程失败: {e}"))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let exe_escaped = format!("'{}'", current_exe.to_string_lossy().replace('\'', "'\\''"));
+        let cmd = format!(
+            "i=0; while kill -0 {ppid} 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; sleep 0.3; setsid {exe_escaped} >/dev/null 2>&1 < /dev/null &"
+        );
+        Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("启动重启辅助进程失败: {e}"))?;
+    }
+
+    // 辅助进程已就位，稍等片刻让前端把「正在重启」状态画出来再退出。
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        app.exit(0);
     });
     Ok(())
-}
-
-/// 轮询下载进度：已下字节=临时文件当前大小；探测 curl 是否退出及成败。
-#[tauri::command]
-fn update_download_progress(state: tauri::State<UpdateDownload>) -> Result<DlProgress, String> {
-    let mut guard = state.inner.lock().unwrap();
-    let job = guard.as_mut().ok_or("没有进行中的下载")?;
-    let downloaded = fs::metadata(&job.path).map(|m| m.len()).unwrap_or(0);
-    if !job.done {
-        match job.child.try_wait() {
-            Ok(Some(status)) => {
-                job.done = true;
-                job.ok = status.success();
-                if !status.success() {
-                    job.err = Some("下载失败（网络中断或文件不可用）".into());
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                job.done = true;
-                job.ok = false;
-                job.err = Some(format!("下载进程异常: {e}"));
-            }
-        }
-    }
-    Ok(DlProgress {
-        downloaded,
-        total: job.total,
-        done: job.done,
-        ok: job.ok,
-        err: job.err.clone(),
-    })
-}
-
-/// 拉起已下载好的安装程序（独立进程，app 退出后继续运行）。
-#[tauri::command]
-fn run_update_installer(state: tauri::State<UpdateDownload>) -> Result<(), String> {
-    let guard = state.inner.lock().unwrap();
-    let job = guard.as_ref().ok_or("没有已下载的安装包")?;
-    if !job.done || !job.ok {
-        return Err("安装包尚未下载完成".into());
-    }
-    if !job.path.exists() {
-        return Err("安装包文件不存在".into());
-    }
-    Command::new(&job.path)
-        .spawn()
-        .map_err(|e| format!("启动安装程序失败: {e}"))?;
-    Ok(())
-}
-
-/// 退出整个 app（更新前调用，让安装程序能替换文件）。
-#[tauri::command]
-fn quit_app(app: tauri::AppHandle) {
-    app.exit(0);
 }
 
 // ── 会话历史（最近会话浏览 + 内容入口）──────────────────────────
@@ -3468,9 +3425,11 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),
         ))
+        // 官方自动更新：latest.json + 签名验证；process 插件供更新后 relaunch。
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(cfg.clone())
         .manage(close_to_tray.clone())
-        .manage(UpdateDownload::default())
         .setup(move |app| {
             // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
             // app_id 必须 == tauri.conf.json 的 identifier，否则与通知插件用的 AUMID 不一致。
@@ -3538,10 +3497,7 @@ pub fn run() {
             get_env_status,
             get_platform,
             check_for_update,
-            start_update_download,
-            update_download_progress,
-            run_update_installer,
-            quit_app,
+            force_quit_and_relaunch,
             list_memory_projects,
             list_memories,
             read_global_md,

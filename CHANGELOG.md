@@ -5,6 +5,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.10.0] - 2026-07-02
+
+### 新增 / 优化
+- **在线自动更新升级为官方 `tauri-plugin-updater`**（参考 claude-code-history-viewer 同款方案）。安装版发现新版后弹窗一键更新：**下载（带进度条 + minisign 签名验证）→ 静默安装 → 自动重启进新版**，全程不用去下载页。
+  - **签名验证**：每个安装包发版时用本机私钥签名（`.sig`），应用内置公钥验证，杜绝下载被篡改的安装包（替代 v0.9.12 自实现方案的「仅 HTTPS」）。
+  - **更新源**：Release 附带的 `latest.json`（`scripts/make-latest-json.ps1` 发版时生成上传），插件按它比版本 + 拿签名。
+  - **重启兜底**：官方 `relaunch()` 在 mac 有已知上游 bug（tauri#13923 等）——新增 `force_quit_and_relaunch` 命令，用游离辅助进程**等本进程完全退出**再拉起新版（否则 single-instance 插件会把新进程当重复启动唤回旧窗口）。
+  - **兜底链**：插件检查失败（某版缺 latest.json / mac 包未签名 / 网络异常）自动退回 GitHub API 探测，弹窗退化为「打开下载页」手动更新；便携版 exe 无法原地更新，同样走下载页。
+  - v0.9.12 的 curl 自实现下载器（`start_update_download` 等四命令）退役。
+  - 关键改动：`src-tauri/tauri.conf.json`（`plugins.updater` 公钥/endpoint + `createUpdaterArtifacts`）、`src-tauri/Cargo.toml` + `package.json`（updater/process 插件）、`src-tauri/src/lib.rs`（注册插件 + `force_quit_and_relaunch`，删旧下载器）、`src/UpdateModal.tsx`（换官方插件下载安装流）、`src/App.tsx`（插件检查为主 + API 兜底）、`src-tauri/capabilities/default.json`、`scripts/make-latest-json.ps1`（新）。
+  - ⚠️ 一键自动更新从 **v0.10.0 起**生效（旧版用户收到的还是旧弹窗/横幅）；mac 自动更新待 mac 侧构建接入签名后启用。
+
 ## [0.9.14] - 2026-07-02
 
 ### 新增 / 优化

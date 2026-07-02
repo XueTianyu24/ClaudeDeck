@@ -14,7 +14,9 @@ import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
 import Markdown from "./Markdown";
 import SessionFullView from "./SessionFullView";
-import UpdateModal, { type UpdateInfo } from "./UpdateModal";
+import { getVersion } from "@tauri-apps/api/app";
+import { check as pluginCheckUpdate } from "@tauri-apps/plugin-updater";
+import UpdateModal, { type UpdateData, type UpdateInfo } from "./UpdateModal";
 import { fmtBytes, fmtCost, fmtTokens } from "./usageFormat";
 
 type Session = {
@@ -232,11 +234,12 @@ function App() {
   // 运行环境探测（区分没装 CC / 装了没跑；curl 可用性）
   const [env, setEnv] = useState<EnvStatus | null>(null);
 
-  // 检查更新：启动静默查 + 设置面板手动查
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // 检查更新：启动静默查 + 设置面板手动查（官方插件为主，GitHub API 兜底）
+  const [update, setUpdate] = useState<UpdateData | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false); // 更新弹窗开关
+  const [appVersion, setAppVersion] = useState(""); // 当前版本号（关于区显示）
 
   // 手机推送（多渠道 hook）状态
   const [phone, setPhone] = useState<PhoneStatus | null>(null);
@@ -813,17 +816,43 @@ function App() {
   }, []);
 
   // 检查更新。manual=true 为设置面板手动触发（无论结果都给反馈，且无视「忽略」记录）；
-  // 启动静默检查只在「有新版且未被忽略」时弹横幅，没网/限流静默失败不打扰。
+  // 启动静默检查只在「有新版且未被忽略」时弹窗，没网/限流静默失败不打扰。
+  // 主路径 = 官方 tauri-plugin-updater（latest.json + 签名验证，可一键下载安装）；
+  // 插件检查失败（某版没传 latest.json / mac 未签名等）→ 兜底 GitHub API，只能开下载页。
   async function checkUpdate(manual = false) {
     setUpdateChecking(true);
     if (manual) setUpdateMsg(null);
     try {
-      const info = await invoke<UpdateInfo>("check_for_update");
-      if (info.has_update) {
+      let found: UpdateData | null = null;
+      try {
+        const up = await pluginCheckUpdate({ timeout: 15000 });
+        if (up) {
+          found = {
+            current: up.currentVersion,
+            latest: up.version,
+            notes: up.body ?? "",
+            url: "https://github.com/XueTianyu24/ClaudeDeck/releases/latest",
+            update: up,
+          };
+        }
+      } catch {
+        // 插件路径失败 → GitHub API 兜底探测（无一键安装，弹窗退化为「打开下载页」）。
+        const info = await invoke<UpdateInfo>("check_for_update");
+        if (info.has_update) {
+          found = {
+            current: info.current,
+            latest: info.latest,
+            notes: info.notes,
+            url: info.url,
+            update: null,
+          };
+        }
+      }
+      if (found) {
         // 手动检查无视「忽略」记录；启动静默检查则被忽略过的版本不再弹。
         const dismissed = localStorage.getItem(DISMISS_KEY);
-        if (manual || dismissed !== info.latest) {
-          setUpdate(info);
+        if (manual || dismissed !== found.latest) {
+          setUpdate(found);
           setUpdateModalOpen(true);
         } else {
           setUpdate(null);
@@ -833,9 +862,9 @@ function App() {
       }
       if (manual) {
         setUpdateMsg(
-          info.has_update
-            ? `发现新版本 v${info.latest}`
-            : `已是最新版（v${info.current}）`
+          found
+            ? `发现新版本 v${found.latest}`
+            : `已是最新版（v${appVersion || "当前版本"}）`
         );
       }
     } catch (e) {
@@ -845,6 +874,9 @@ function App() {
     }
   }
   useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => {});
     checkUpdate(false);
   }, []);
 
@@ -1016,7 +1048,7 @@ function App() {
                 <div className="about-section">
                   <h3>ℹ️ 关于 / 检查更新</h3>
                   <p className="phone-hint">
-                    当前版本 v{update?.current ?? "—"}。检查到新版会在顶部提示，便携版 / 安装版 / mac 均可手动去下载页更新。
+                    当前版本 v{appVersion || "—"}。检查到新版会自动弹窗，安装版可一键下载安装（带签名验证）并自动重启；便携版去下载页手动更新。
                   </p>
                   <div className="about-row">
                     <button
@@ -1170,9 +1202,9 @@ function App() {
         </div>
       </header>
 
-      {update?.has_update && updateModalOpen && (
+      {update && updateModalOpen && (
         <UpdateModal
-          info={update}
+          data={update}
           onDismiss={dismissUpdate}
           onLater={() => setUpdateModalOpen(false)}
         />
