@@ -191,6 +191,9 @@ type SessionCost = {
 };
 
 const DISMISS_KEY = "cd-update-dismissed"; // 记住「忽略此版本」，同版本不再打扰
+// 更新检查/下载走的代理（可选）。更新源在 GitHub 资产 CDN（objects.githubusercontent.com），
+// 国内网络时通时断——配上本地代理后检查和下载都稳定走代理。
+const UPDATE_PROXY_KEY = "cd-update-proxy";
 
 // 「按项目浏览」分组默认折叠；展开过哪些组记 localStorage，重启后保持。
 const GROUPS_EXPANDED_KEY = "cd-groups-expanded";
@@ -260,6 +263,10 @@ function App() {
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false); // 更新弹窗开关
   const [appVersion, setAppVersion] = useState(""); // 当前版本号（关于区显示）
+  // 更新代理（存 localStorage，检查更新与下载安装都用它）
+  const [updateProxy, setUpdateProxy] = useState(
+    () => localStorage.getItem(UPDATE_PROXY_KEY) || ""
+  );
 
   // 会话记录保留期（CC cleanupPeriodDays；null = 未配置走默认 30 天）
   const [cleanupDays, setCleanupDays] = useState<number | null>(null);
@@ -894,9 +901,10 @@ function App() {
       // 还没传完，都不该直接掉到「打开下载页」兜底。
       let up: Awaited<ReturnType<typeof pluginCheckUpdate>> = null;
       let pluginOk = false;
+      const proxy = updateProxy.trim() || undefined;
       for (let attempt = 0; attempt < 2 && !pluginOk; attempt++) {
         try {
-          up = await pluginCheckUpdate({ timeout: 15000 });
+          up = await pluginCheckUpdate({ timeout: 15000, proxy });
           pluginOk = true;
         } catch (e) {
           console.warn(`[updater] 插件检查失败（第 ${attempt + 1} 次）`, e);
@@ -1159,6 +1167,28 @@ function App() {
                     </button>
                     {updateMsg && <span className="about-msg">{updateMsg}</span>}
                   </div>
+                  <label className="field">
+                    <input
+                      type="text"
+                      className="keyinput"
+                      placeholder="更新代理（可选，如 http://127.0.0.1:7897）"
+                      value={updateProxy}
+                      onChange={(e) => {
+                        setUpdateProxy(e.target.value);
+                        try {
+                          localStorage.setItem(
+                            UPDATE_PROXY_KEY,
+                            e.target.value.trim()
+                          );
+                        } catch {
+                          /* 存不上则仅本次生效 */
+                        }
+                      }}
+                    />
+                  </label>
+                  <p className="phone-hint">
+                    更新源在 GitHub，国内网络时通时断；填本地代理（与启动器代理一致即可）后检查更新和下载安装都会稳定走代理。
+                  </p>
                 </div>
 
               </div>
