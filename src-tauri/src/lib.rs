@@ -3499,6 +3499,31 @@ pub fn run() {
         .manage(cfg.clone())
         .manage(close_to_tray.clone())
         .setup(move |app| {
+            // 隐藏诊断：`--check-update-cli` 直接跑官方 updater 检查，结果写
+            // %TEMP%\claudedeck-update-check.log 后退出（GUI 子系统无控制台，只能落盘）。
+            // 用于排查「插件检查失败静默退回下载页」时拿真实错误。
+            if std::env::args().any(|a| a == "--check-update-cli") {
+                use tauri_plugin_updater::UpdaterExt;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let msg = match handle.updater() {
+                        Ok(updater) => match updater.check().await {
+                            Ok(Some(u)) => {
+                                format!("UPDATE FOUND: {} -> {}", u.current_version, u.version)
+                            }
+                            Ok(None) => "NO UPDATE".to_string(),
+                            Err(e) => format!("CHECK ERROR: {e:?}"),
+                        },
+                        Err(e) => format!("UPDATER INIT ERROR: {e:?}"),
+                    };
+                    let _ = fs::write(
+                        std::env::temp_dir().join("claudedeck-update-check.log"),
+                        &msg,
+                    );
+                    handle.exit(0);
+                });
+            }
+
             // 注册 AUMID + 开始菜单快捷方式，让免安装 / dev 的 toast 通知显示 ClaudeDeck。
             // app_id 必须 == tauri.conf.json 的 identifier，否则与通知插件用的 AUMID 不一致。
             #[cfg(windows)]

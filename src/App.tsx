@@ -890,8 +890,20 @@ function App() {
     if (manual) setUpdateMsg(null);
     try {
       let found: UpdateData | null = null;
-      try {
-        const up = await pluginCheckUpdate({ timeout: 15000 });
+      // 插件检查失败自动重试一次（隔 2s）：瞬时网络抖动 / 发版时 latest.json 刚好
+      // 还没传完，都不该直接掉到「打开下载页」兜底。
+      let up: Awaited<ReturnType<typeof pluginCheckUpdate>> = null;
+      let pluginOk = false;
+      for (let attempt = 0; attempt < 2 && !pluginOk; attempt++) {
+        try {
+          up = await pluginCheckUpdate({ timeout: 15000 });
+          pluginOk = true;
+        } catch (e) {
+          console.warn(`[updater] 插件检查失败（第 ${attempt + 1} 次）`, e);
+          if (attempt === 0) await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+      if (pluginOk) {
         if (up) {
           found = {
             current: up.currentVersion,
@@ -901,8 +913,8 @@ function App() {
             update: up,
           };
         }
-      } catch {
-        // 插件路径失败 → GitHub API 兜底探测（无一键安装，弹窗退化为「打开下载页」）。
+      } else {
+        // 插件路径两次都失败 → GitHub API 兜底探测（无一键安装，弹窗退化为「打开下载页」）。
         const info = await invoke<UpdateInfo>("check_for_update");
         if (info.has_update) {
           found = {
