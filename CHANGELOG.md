@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.9.14] - 2026-07-02
+
+### 新增 / 优化
+- **用量计费：新增 Claude 5 家族定价**。费率表加入 **Fable 5 / Mythos 5**（input $10 / output $50 每百万 token，缓存读 $1 / 写5m $12.5 / 写1h $20，按全表口径派生）；Sonnet 5 沿用通用 sonnet 分支标准价（$3/$15）。新增单测 `pricing_fable5_and_sonnet5` 对拍。费率数字来源为官方费率卡。
+- **用量计费：「💲 费率表」只读弹层**。页头新增按钮，点击弹出居中只读费率表（7 个模型族 × 输入/输出/缓存写5m/写1h/读，$/1M token），方便随时核对计费口径。后端新命令 `usage::list_pricing` 用代表性模型 id 探测 `find_pricing` 生成表格——与实际计费共用单一真相源，改费率自动跟随。
+  - 关键改动：`src-tauri/src/usage.rs`（Fable/Mythos 定价分支 + `list_pricing` + 单测）、`src-tauri/src/lib.rs`（注册命令）、`src/UsageView.tsx`（费率表按钮 + 弹层）、`src/App.css`（`.rates-*` 样式）。
+
 ## [0.9.13] - 2026-07-01
 
 ### 修复 / 优化

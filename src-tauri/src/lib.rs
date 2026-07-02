@@ -3595,7 +3595,8 @@ pub fn run() {
             read_session_full,
             delete_session,
             usage::list_token_usage,
-            usage::list_session_costs
+            usage::list_session_costs,
+            usage::list_pricing
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

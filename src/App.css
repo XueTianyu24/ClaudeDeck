@@ -3405,3 +3405,105 @@ tr.muted {
 .skill-list .skill-card:not(.open) .skill-tags {
   margin-top: 4px;
 }
+
+/* ── 用量计费：费率表按钮 + 只读弹层 ── */
+.usage-rates-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.usage-rates-btn:hover {
+  background: var(--border);
+}
+
+.rates-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.rates-modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 720px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.rates-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.rates-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.rates-close {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px 9px;
+  border-radius: 6px;
+}
+.rates-close:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.rates-body {
+  padding: 14px 18px;
+  overflow: auto;
+}
+.rates-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.rates-table th,
+.rates-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.rates-table th.num,
+.rates-table td.num {
+  text-align: right;
+  white-space: nowrap;
+}
+.rates-table th {
+  color: var(--dim);
+  font-weight: 600;
+}
+.rates-name {
+  font-weight: 600;
+}
+.rates-covers {
+  color: var(--dim);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.rates-note {
+  color: var(--dim);
+  font-size: 12px;
+  margin-top: 12px;
+  line-height: 1.55;
+}

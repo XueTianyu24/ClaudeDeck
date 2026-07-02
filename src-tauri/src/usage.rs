@@ -83,7 +83,20 @@ fn find_pricing(model: &str) -> Option<Pricing> {
         cache_write_5m: 0.3e-6,
         cache_write_1h: 0.5e-6,
     };
+    // Fable 5（含同价的 Mythos 5，仅 Project Glasswing）= $10/$50；
+    // 缓存派生与其它族一致：读 = input×0.1，写 5m = ×1.25，写 1h = ×2。
+    const FABLE: Pricing = Pricing {
+        input: 10e-6,
+        output: 50e-6,
+        cache_read: 1e-6,
+        cache_write_5m: 12.5e-6,
+        cache_write_1h: 20e-6,
+    };
 
+    // fable / mythos（同族同价，且不含 opus/sonnet/haiku 子串，先判无歧义）
+    if m.contains("fable") || m.contains("mythos") {
+        return Some(FABLE);
+    }
     // opus
     if m.contains("opus") {
         if m.contains("opus-4-5")
@@ -96,7 +109,7 @@ fn find_pricing(model: &str) -> Option<Pricing> {
         // opus-4-0 / opus-4-1 / opus-4 / opus-3 → 老价
         return Some(OPUS_OLD);
     }
-    // sonnet（4.x / 3.x 同价）
+    // sonnet（5 / 4.x / 3.x 同为 $3/$15；Sonnet 5 标准价，intro $2/$10 未建模）
     if m.contains("sonnet") {
         return Some(SONNET);
     }
@@ -663,6 +676,48 @@ pub(crate) fn list_session_costs() -> Result<Vec<SessionCost>, String> {
         .collect())
 }
 
+/// 费率表一行（每百万 token 美元价，供前端只读展示）。
+#[derive(Debug, Serialize)]
+pub(crate) struct RateRow {
+    name: String,   // 模型族显示名
+    covers: String, // 涵盖的模型 id 示例
+    input: f64,     // $/1M token（以下同）
+    output: f64,
+    cache_write_5m: f64,
+    cache_write_1h: f64,
+    cache_read: f64,
+}
+
+/// 各模型族费率（只读）。用代表性 id 探测 `find_pricing`，与实际计费**同一真相源**
+/// （改了计费此处自动跟随，不会漂）；数值 ×1e6 转成「每百万 token 美元」。
+#[tauri::command]
+pub(crate) fn list_pricing() -> Vec<RateRow> {
+    // (显示名, 涵盖示例, 代表性探测 id)
+    let table = [
+        ("Claude Fable 5 / Mythos 5", "claude-fable-5 · claude-mythos-5", "claude-fable-5"),
+        ("Claude Opus 4.5–4.8", "claude-opus-4-5 … 4-8", "claude-opus-4-8"),
+        ("Claude Opus 4.0/4.1 · Opus 3", "claude-opus-4-0 / 4-1 · claude-3-opus", "claude-opus-4-0"),
+        ("Claude Sonnet 5 / 4.x / 3.x", "claude-sonnet-5 · -4-6 · -3-5", "claude-sonnet-5"),
+        ("Claude Haiku 4.5", "claude-haiku-4-5", "claude-haiku-4-5"),
+        ("Claude Haiku 3.5", "claude-3-5-haiku", "claude-3-5-haiku"),
+        ("Claude Haiku 3", "claude-3-haiku", "claude-3-haiku"),
+    ];
+    table
+        .iter()
+        .filter_map(|(name, covers, probe)| {
+            find_pricing(probe).map(|p| RateRow {
+                name: name.to_string(),
+                covers: covers.to_string(),
+                input: p.input * 1e6,
+                output: p.output * 1e6,
+                cache_write_5m: p.cache_write_5m * 1e6,
+                cache_write_1h: p.cache_write_1h * 1e6,
+                cache_read: p.cache_read * 1e6,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +764,22 @@ mod tests {
         let h = find_pricing("claude-haiku-4-5").unwrap();
         assert!(approx(h.input, 1e-6) && approx(h.output, 5e-6));
         assert!(approx(h.cache_write_1h, 2e-6));
+    }
+
+    #[test]
+    fn pricing_fable5_and_sonnet5() {
+        // Fable 5 / Mythos 5 = $10/$50，缓存派生 1 / 12.5 / 20
+        for m in ["claude-fable-5", "claude-mythos-5", "anthropic/claude-fable-5"] {
+            let p = find_pricing(m).unwrap_or_else(|| panic!("无费率: {m}"));
+            assert!(approx(p.input, 10e-6), "{m} input");
+            assert!(approx(p.output, 50e-6), "{m} output");
+            assert!(approx(p.cache_read, 1e-6), "{m} read");
+            assert!(approx(p.cache_write_5m, 12.5e-6), "{m} 5m");
+            assert!(approx(p.cache_write_1h, 20e-6), "{m} 1h");
+        }
+        // Sonnet 5 走通用 sonnet 分支，标准价 $3/$15
+        let s = find_pricing("claude-sonnet-5").unwrap();
+        assert!(approx(s.input, 3e-6) && approx(s.output, 15e-6));
     }
 
     #[test]

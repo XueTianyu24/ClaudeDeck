@@ -35,6 +35,17 @@ type ModelUsage = {
   priced: boolean;
 };
 
+// 费率表（只读），对应后端 usage.rs 的 RateRow（$/1M token）
+type RateRow = {
+  name: string;
+  covers: string;
+  input: number;
+  output: number;
+  cache_write_5m: number;
+  cache_write_1h: number;
+  cache_read: number;
+};
+
 type DayUsage = {
   date: string; // YYYY-MM-DD（本地时区）
   input: number;
@@ -201,6 +212,19 @@ export default function UsageView() {
   const [period, setPeriod] = useState<Period>("day");
   const [sessionPage, setSessionPage] = useState(0);
   const [periodPage, setPeriodPage] = useState(0);
+  const [showRates, setShowRates] = useState(false);
+  const [rates, setRates] = useState<RateRow[] | null>(null);
+
+  async function openRates() {
+    setShowRates(true);
+    if (!rates) {
+      try {
+        setRates(await invoke<RateRow[]>("list_pricing"));
+      } catch {
+        setRates([]);
+      }
+    }
+  }
 
   async function reload() {
     setLoading(true);
@@ -299,6 +323,13 @@ export default function UsageView() {
         <span className="usage-sub">
           {r.session_count} 个会话 · 扫描 {r.scanned_files} 个记录文件
         </span>
+        <button
+          className="usage-rates-btn"
+          onClick={openRates}
+          title="查看各模型费率（只读）"
+        >
+          💲 费率表
+        </button>
         <button className="refresh" onClick={reload} title="重新扫描">
           ↻
         </button>
@@ -495,6 +526,63 @@ export default function UsageView() {
         total={sessions.length}
         onPage={setSessionPage}
       />
+
+      {showRates && (
+        <div className="rates-overlay" onClick={() => setShowRates(false)}>
+          <div className="rates-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="rates-head">
+              <h3>模型费率表（每百万 token · 美元）</h3>
+              <button
+                className="rates-close"
+                onClick={() => setShowRates(false)}
+                title="关闭"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="rates-body">
+              {rates === null ? (
+                <p className="rates-note">加载中…</p>
+              ) : rates.length === 0 ? (
+                <p className="rates-note">无费率数据</p>
+              ) : (
+                <table className="rates-table">
+                  <thead>
+                    <tr>
+                      <th>模型</th>
+                      <th className="num">输入</th>
+                      <th className="num">输出</th>
+                      <th className="num">缓存写 5m</th>
+                      <th className="num">缓存写 1h</th>
+                      <th className="num">缓存读</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rates.map((row) => (
+                      <tr key={row.name}>
+                        <td>
+                          <div className="rates-name">{row.name}</div>
+                          <div className="rates-covers">{row.covers}</div>
+                        </td>
+                        <td className="num mono">${row.input.toFixed(2)}</td>
+                        <td className="num mono">${row.output.toFixed(2)}</td>
+                        <td className="num mono">${row.cache_write_5m.toFixed(2)}</td>
+                        <td className="num mono">${row.cache_write_1h.toFixed(2)}</td>
+                        <td className="num mono">${row.cache_read.toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <p className="rates-note">
+                只读参考。硬编码费率（对齐 ccusage / 官方费率卡），缓存写 5m = 1.25×、1h =
+                2×、读 = 0.1× 输入价。Sonnet 5 按标准价 $3/$15（intro $2/$10 至
+                2026-08-31 未建模）。订阅用户视为等效成本参考。
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
