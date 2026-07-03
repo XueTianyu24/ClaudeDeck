@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.1] - 2026-07-04
+
+### 新增 / 优化
+- **定时开窗自动清理预热会话**：定时触发与「立即开窗一次」时，为本次预热开窗指定专属会话 ID（`claude -p --session-id <uuid>`），开窗成功后**自动删除**产生的「ok→OK」垃圾会话 jsonl，不再污染会话监控列表。删除为 best-effort（删失败不影响开窗结果），跨平台按会话 ID 在 projects 子目录精确匹配。关键改动：`src-tauri/src/lib.rs`（`run_warmup` + 新增 `delete_warmup_session`）、`src-tauri/Cargo.toml`（新增 `uuid` 依赖）。
+- **记忆编辑「分屏实时预览」**：编辑全局 CLAUDE.md 与项目 MEMORY.md 索引时，改为**左源码 + 右实时渲染**的分屏预览（输入即刷新，渲染跟随双主题），顶栏「预览」开关可切回源码独占整宽，窄屏自动上下堆叠。源码原样存盘、绝不重排文件格式（故未采用会反序列化 md 的所见即所得方案）。关键改动：`src/MemoryView.tsx`（`renderEditor` 内联渲染 + `previewOn` 状态）、`src/App.css`（`.mem-editor-split` / `.mem-editor-preview`）。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过，release 完整构建成功，曹少真机验收 OK。
+
 ## [0.12.0] - 2026-07-02
 
 ### 新增 / 优化

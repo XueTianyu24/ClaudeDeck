@@ -2591,12 +2591,22 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
         prompt.trim()
     };
 
+    // 为本次预热开窗指定一个专属会话 ID（合法 UUID），成功后按此 ID 精确删掉
+    // 产生的「ok→OK」垃圾会话 jsonl，避免污染会话列表（曹少 2026-07-03）。
+    // uuid 仅含 [0-9a-f-]，直接拼进命令无注入风险。
+    let session_id = uuid::Uuid::new_v4().to_string();
+
     #[cfg(windows)]
     let mut cmd = {
         let script = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-            format!("{}\nclaude -p {}", pre_cmd.trim(), ps_single_quote(p))
+            format!(
+                "{}\nclaude -p --session-id {} {}",
+                pre_cmd.trim(),
+                session_id,
+                ps_single_quote(p)
+            )
         } else {
-            format!("claude -p {}", ps_single_quote(p))
+            format!("claude -p --session-id {} {}", session_id, ps_single_quote(p))
         };
         let b64 = ps_encoded(&script);
         let mut c = silent_command("powershell");
@@ -2606,9 +2616,14 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     #[cfg(not(windows))]
     let mut cmd = {
         let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-            format!("{} ; claude -p {}", pre_cmd.trim(), sh_quote(p))
+            format!(
+                "{} ; claude -p --session-id {} {}",
+                pre_cmd.trim(),
+                session_id,
+                sh_quote(p)
+            )
         } else {
-            format!("claude -p {}", sh_quote(p))
+            format!("claude -p --session-id {} {}", session_id, sh_quote(p))
         };
         // 登录 shell 以拿到含 claude 的 PATH。
         let mut c = silent_command("sh");
@@ -2630,7 +2645,12 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     match rx.recv_timeout(Duration::from_secs(120)) {
         Ok(Ok(o)) => {
             if o.status.success() {
-                (true, "开窗成功：已发送一条消息，5 小时窗口开始计时".to_string())
+                let cleaned = delete_warmup_session(&session_id);
+                let tail = if cleaned { "，已自动清理预热会话" } else { "" };
+                (
+                    true,
+                    format!("开窗成功：已发送一条消息，5 小时窗口开始计时{tail}"),
+                )
             } else {
                 let err = String::from_utf8_lossy(&o.stderr);
                 let snippet: String = err.trim().chars().take(300).collect();
@@ -2650,6 +2670,30 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
         Ok(Err(e)) => (false, format!("无法启动 claude：{e}")),
         Err(_) => (false, "开窗超时（120 秒未返回）".to_string()),
     }
+}
+
+/// 删除某次预热开窗产生的会话 jsonl（best-effort，删不掉不影响开窗结果）。
+/// 预热在 home 目录跑，会话必落在 `~/.claude/projects/<home 编码>/<session_id>.jsonl`；
+/// 为跨平台稳健，直接在所有 project 子目录里找唯一的 `<session_id>.jsonl` 删除。
+fn delete_warmup_session(session_id: &str) -> bool {
+    let Some(root) = projects_dir() else {
+        return false;
+    };
+    let target = format!("{session_id}.jsonl");
+    let Ok(entries) = fs::read_dir(&root) else {
+        return false;
+    };
+    for e in entries.flatten() {
+        let dir = e.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let candidate = dir.join(&target);
+        if candidate.is_file() {
+            return fs::remove_file(&candidate).is_ok();
+        }
+    }
+    false
 }
 
 fn record_warmup_result(ok: bool, msg: &str) {

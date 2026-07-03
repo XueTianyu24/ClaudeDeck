@@ -1559,6 +1559,53 @@ tr.muted {
   border-color: var(--green);
 }
 
+/* ── 分屏编辑：左源码 textarea + 右实时预览（预览态编辑，参考 vscode-office SV 模式）── */
+.mem-editor-split {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+.mem-editor-split .mem-textarea,
+.mem-editor-split .mem-editor-preview {
+  flex: 1 1 50%;
+  min-width: 0;
+  height: 58vh;
+  min-height: 340px;
+}
+.mem-editor-split .mem-textarea {
+  resize: none;
+}
+.mem-editor-preview {
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  color: var(--text);
+  word-break: break-word;
+}
+/* 关闭预览：源码独占整宽，恢复可拖拽高度 */
+.mem-editor-split.solo {
+  display: block;
+}
+.mem-editor-split.solo .mem-textarea {
+  width: 100%;
+  height: auto;
+  min-height: 420px;
+  resize: vertical;
+}
+/* 窄屏：上下堆叠 */
+@media (max-width: 760px) {
+  .mem-editor-split {
+    flex-direction: column;
+  }
+  .mem-editor-split .mem-textarea,
+  .mem-editor-split .mem-editor-preview {
+    height: 42vh;
+    min-height: 240px;
+  }
+}
+
 .mem-toolbar-btn.danger {
   color: var(--red);
   border-color: var(--red);

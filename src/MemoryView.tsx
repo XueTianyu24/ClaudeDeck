@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Globe, Link2, ListOrdered, Trash2 } from "lucide-react";
+import { Eye, Globe, Link2, ListOrdered, Trash2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import Markdown from "./Markdown";
 import ForceGraph, { type GNode, type GEdge } from "./ForceGraph";
@@ -67,6 +67,7 @@ export default function MemoryView() {
   // 编辑 / 删除 / 回收站
   const [editing, setEditing] = useState<string | null>(null); // 文件名，或 GLOBAL
   const [editText, setEditText] = useState("");
+  const [previewOn, setPreviewOn] = useState(true); // 编辑时右侧实时预览开关
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [trashMode, setTrashMode] = useState(false);
@@ -219,6 +220,60 @@ export default function MemoryView() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // 全文档编辑器（全局 CLAUDE.md / 项目 MEMORY.md）：左源码 + 右实时预览。
+  // 用内联函数而非嵌套组件返回 JSX——嵌套组件每次渲染是新类型会重挂 textarea、
+  // 导致每敲一个字都失焦。内联进同一树位置则保持 textarea 身份。
+  function renderEditor(
+    label: string,
+    onCancel: () => void,
+    onSave: () => void,
+  ) {
+    return (
+      <div className="mem-editor">
+        <div className="mem-editor-bar">
+          <span>{label}</span>
+          <div className="mem-editor-btns">
+            <button
+              className={`mem-toolbar-btn ${previewOn ? "active" : ""}`}
+              onClick={() => setPreviewOn((v) => !v)}
+              title={previewOn ? "关闭实时预览" : "开启实时预览"}
+            >
+              <Eye size={13} /> 预览
+            </button>
+            <button
+              className="mem-toolbar-btn"
+              disabled={busy}
+              onClick={onCancel}
+            >
+              取消
+            </button>
+            <button
+              className="mem-toolbar-btn active"
+              disabled={busy}
+              onClick={onSave}
+            >
+              保存
+            </button>
+          </div>
+        </div>
+        <div className={`mem-editor-split ${previewOn ? "" : "solo"}`}>
+          <textarea
+            className="mem-textarea"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            spellCheck={false}
+          />
+          {previewOn && (
+            <div className="mem-editor-preview">
+              <Markdown>{editText || "_（空文档）_"}</Markdown>
+            </div>
+          )}
+        </div>
+        {msg && <p className="phone-msg">{msg}</p>}
+      </div>
+    );
   }
 
   async function deleteMemory(file: string) {
@@ -472,34 +527,11 @@ export default function MemoryView() {
               <span>~/.claude/CLAUDE.md 不存在</span>
             </div>
           ) : editing === GLOBAL ? (
-            <div className="mem-editor">
-              <div className="mem-editor-bar">
-                <span>编辑 CLAUDE.md（全局，影响所有项目）</span>
-                <div className="mem-editor-btns">
-                  <button
-                    className="mem-toolbar-btn"
-                    disabled={busy}
-                    onClick={() => setEditing(null)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    className="mem-toolbar-btn active"
-                    disabled={busy}
-                    onClick={saveGlobalEdit}
-                  >
-                    保存
-                  </button>
-                </div>
-              </div>
-              <textarea
-                className="mem-textarea"
-                value={editText}
-                onChange={(e) => setEditText(e.target.value)}
-                spellCheck={false}
-              />
-              {msg && <p className="phone-msg">{msg}</p>}
-            </div>
+            renderEditor(
+              "编辑 CLAUDE.md（全局，影响所有项目）",
+              () => setEditing(null),
+              saveGlobalEdit,
+            )
           ) : (
             <>
               <div className="mem-doc-bar">
@@ -562,34 +594,11 @@ export default function MemoryView() {
                   <p>该项目没有 MEMORY.md 索引</p>
                 </div>
               ) : editing === INDEX ? (
-                <div className="mem-editor">
-                  <div className="mem-editor-bar">
-                    <span>编辑 MEMORY.md（项目索引）</span>
-                    <div className="mem-editor-btns">
-                      <button
-                        className="mem-toolbar-btn"
-                        disabled={busy}
-                        onClick={() => setEditing(null)}
-                      >
-                        取消
-                      </button>
-                      <button
-                        className="mem-toolbar-btn active"
-                        disabled={busy}
-                        onClick={saveProjectIndex}
-                      >
-                        保存
-                      </button>
-                    </div>
-                  </div>
-                  <textarea
-                    className="mem-textarea"
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    spellCheck={false}
-                  />
-                  {msg && <p className="phone-msg">{msg}</p>}
-                </div>
+                renderEditor(
+                  "编辑 MEMORY.md（项目索引）",
+                  () => setEditing(null),
+                  saveProjectIndex,
+                )
               ) : (
                 <>
                   <div className="mem-doc-bar">
