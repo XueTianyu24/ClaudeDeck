@@ -1,8 +1,10 @@
-# ClaudeDeck
+# Beacon
 
-> Claude Code 的本地控制台 —— **会话监控 + 完成通知 + 记忆可视化 + 技能管理 + 用量计费**桌面应用。
+> Claude Code 的本地控制台 —— **会话监控 + 完成通知 + 记忆可视化 + 技能管理 + 多渠道手机推送 + 启动器 + 用量计费**桌面应用，支持**应用内一键自动更新**（签名验证）。
 
 把散落在 `~/.claude/` 里的状态，变成一块可视化的「驾驶舱」。数据源全部来自本机 `~/.claude/`，无需逆向、无需 hack。
+
+> **关于命名**：应用显示名为 **Beacon**（灯塔），但 GitHub 仓库、下载文件名（`ClaudeDeck.exe`）与应用标识仍沿用 **ClaudeDeck** —— 保证老用户的自动更新链路不中断。二者指的是同一个应用。
 
 ## 功能
 
@@ -27,7 +29,7 @@
 
 - 首次运行被 Windows SmartScreen 拦截是未签名应用的正常现象 → 点「更多信息」→「仍要运行」。
 - 依赖 WebView2 运行时（Win11 自带，无需额外安装）。
-- 想要安装版（进开始菜单、可卸载）：下载 `ClaudeDeck_*_x64-setup.exe`。
+- 想要安装版（进开始菜单、可卸载）：下载 `ClaudeDeck_*_x64-setup.exe`。**安装版支持应用内一键自动更新**——有新版时弹窗提示，签名验证后一键下载、安装并重启。
 
 ## 从源码运行（开发）
 
@@ -62,7 +64,7 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 顶部「用量计费」标签：统计每个会话的 token 消耗与等效 API 费用（按费用排序 + 总计 + 按模型分布），并可切换**日 / 周 / 月**速览。费用为按 Anthropic 公开 API 价的估算（内置费率表，离线可用；缓存写入按 1h 2×、5m 1.25× 分别计价），订阅用户实际不按量计费，此处为等效成本参考。
 
-<p align="center"><img src="docs/usage-billing.png" width="640" alt="ClaudeDeck 用量计费：会话费用统计与日/周/月速览"></p>
+<p align="center"><img src="docs/usage-billing.png" width="640" alt="Beacon 用量计费：会话费用统计与日/周/月速览"></p>
 
 > 看不懂「为什么 90% 以上都是缓存读」「输入/输出/缓存读写到底差在哪」？见 **[用量计费原理说明](docs/usage-billing-explained.md)**（四种 token 含义 + KV Cache 缓存机制 + 常见误解）。
 
@@ -70,7 +72,7 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 
 > 支持 **Bark（iPhone，免费）/ PushPlus（微信，安卓首选）** 两渠道，在应用里 🔔 →「📱 手机推送」选渠道填 key 即可。完整配置（含微信 PushPlus 的实名认证约 4 元 / 关闭服务号免打扰等坑）见 **[手机推送渠道指南](docs/push-channels.md)**。下面以 Bark 手动配置为例。
 
-<p align="center"><img src="docs/bark-notification.jpg" width="300" alt="iPhone 锁屏上的 ClaudeDeck Bark 通知效果"></p>
+<p align="center"><img src="docs/bark-notification.jpg" width="300" alt="iPhone 锁屏上的 Beacon Bark 通知效果"></p>
 
 让 Claude Code 任务完成时推送到手机，**不依赖本应用常驻**——靠 Claude Code 原生 hook 在会话进程内触发。
 
@@ -114,9 +116,9 @@ npm run tauri build      # 免安装 exe: src-tauri/target/release/ClaudeDeck.ex
 - [x] 记忆可视化面板（分类卡片 + 力导向关系图 + Markdown 渲染 + 编辑回写 + 删除/回收站 + 空目录清理）
 - [x] 技能管理（SKILL.md 查看 + 文件结构树 + 标签管理/筛选/搜索 + 打开目录）
 - [x] 手机推送多渠道（Bark / 微信 PushPlus）选择
-- [ ] 会话行展开看最近消息
-- [ ] macOS / Linux 路径编码适配
-- [ ] 在线更新（`tauri-plugin-updater`，从 GitHub Releases 拉新版自动提示；需配套签名密钥，待核心稳定后做）
+- [x] 会话行展开看最近消息（+ 会话全文查看 / 全文检索 / 收藏夹 / 一键继续原会话）
+- [x] 在线自动更新（`tauri-plugin-updater`，签名验证一键升级，安装版可用）
+- [ ] macOS / Linux 路径编码适配（macOS 已基本适配并出 dmg，Linux 待充分实测）
 
 ## 许可
 
