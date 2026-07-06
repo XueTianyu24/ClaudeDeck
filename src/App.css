@@ -3158,6 +3158,25 @@ tr.muted {
   gap: 10px;
   flex: none;
 }
+/* 导出/复制详略档位选择器 */
+.sf-export-mode {
+  height: 30px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 12px;
+  padding: 0 8px;
+  cursor: pointer;
+}
+.sf-export-mode:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+.sf-export-mode:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .sf-x {
   border: none;
   background: transparent;

@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.2] - 2026-07-06
+
+### 新增 / 优化
+- **会话全文查看新增「导出 .md」+ 三档详略**：可把任意历史会话导出为干净 Markdown 文件，供另一个会话 `Read`（"会话 A 读会话 B"场景）。三档：**全文**（完整对话）/ **仅折叠代码**（保留全对话、代码块折叠成 `[代码块·N 行]` 占位省 token）/ **精简**（每轮 Claude 只留最后一条文本即结论 + 折叠代码）。导出与「复制整会话」都跟随所选档位；导出走系统保存对话框选路径 → 后端写盘。内容作用在已清洗的 user/assistant 文本层（工具往返 / 思维链早已剔除，skill 调用只留命令名）。关键改动：`src/SessionFullView.tsx`（`foldCodeBlocks` / 三档 `turnsToMarkdown` / `doExport`）、`src-tauri/src/lib.rs`（新增 `export_session_md` 命令）。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过，release 完整构建成功，曹少真机验收 OK。
+
 ## [0.12.1] - 2026-07-04
 
 ### 新增 / 优化

@@ -2749,6 +2749,20 @@ fn scheduler_loop(app: tauri::AppHandle) {
     }
 }
 
+/// 把会话导出的 Markdown 文本写到用户经保存对话框选定的路径（会话 A 读会话 B 用）。
+/// 路径由前端 dialog::save 产生（用户主动选定），此处仅做父目录存在性校验。
+#[tauri::command]
+fn export_session_md(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if let Some(dir) = p.parent() {
+        if !dir.as_os_str().is_empty() && !dir.is_dir() {
+            return Err(format!("目标目录不存在：{}", dir.display()));
+        }
+    }
+    fs::write(p, content).map_err(|e| format!("导出写入失败: {e}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 fn schedule_get_config() -> ScheduleConfig {
     load_schedule_config()
@@ -3688,6 +3702,7 @@ pub fn run() {
             search_sessions,
             read_session_tail,
             read_session_full,
+            export_session_md,
             delete_session,
             usage::list_token_usage,
             usage::list_session_costs,

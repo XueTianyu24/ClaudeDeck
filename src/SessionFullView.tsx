@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Copy, User } from "lucide-react";
+import { Bot, Copy, Download, User } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import Markdown from "./Markdown";
 
 // 会话全文视图：完整展示整个会话，按「用户问 → Claude 答」问答对组织，
@@ -42,17 +43,44 @@ function groupTurns(msgs: Msg[]): Turn[] {
   return turns;
 }
 
-function oneTurnMarkdown(t: Turn): string {
+// 导出三档：full=全文；foldCode=全留但折叠代码块；brief=每轮 Claude 只留末条 + 折叠代码。
+type ExportMode = "full" | "foldCode" | "brief";
+
+// 折叠围栏代码块 ```lang\n...\n``` → `[代码块·N 行]` 占位（大代码块最占 token，另一会话多半不需要）。
+function foldCodeBlocks(text: string): string {
+  return text.replace(/```[^\n]*\n([\s\S]*?)```/g, (_m, body: string) => {
+    const lines = body.replace(/\n+$/, "").split("\n").length;
+    return `\`[代码块·${lines} 行]\``;
+  });
+}
+
+// 导出文件名清洗：剥非法字符 + 限长。
+function safeFileName(s: string): string {
+  return (
+    (s || "会话").replace(/[\\/:*?"<>|\n\r]+/g, "_").slice(0, 60).trim() || "会话"
+  );
+}
+
+function oneTurnMarkdown(t: Turn, mode: ExportMode = "full"): string {
   const out: string[] = [];
   if (t.user) out.push("**🧑 用户**", "", cleanUserText(t.user.text).trim(), "");
-  for (const a of t.assistants) out.push("**🤖 Claude**", "", a.text.trim(), "");
+  // 精简：每轮 Claude 只留最后一条文本（通常是结论），砍中间过程性文本。
+  const assistants = mode === "brief" ? t.assistants.slice(-1) : t.assistants;
+  for (const a of assistants) {
+    const body = mode === "full" ? a.text.trim() : foldCodeBlocks(a.text).trim();
+    out.push("**🤖 Claude**", "", body, "");
+  }
   return out.join("\n").trim();
 }
 
-function turnsToMarkdown(title: string, turns: Turn[]): string {
+function turnsToMarkdown(
+  title: string,
+  turns: Turn[],
+  mode: ExportMode = "full"
+): string {
   const out: string[] = [`# ${title}`, ""];
   turns.forEach((t, i) => {
-    out.push(`## 第 ${i + 1} 轮`, "", oneTurnMarkdown(t), "", "---", "");
+    out.push(`## 第 ${i + 1} 轮`, "", oneTurnMarkdown(t, mode), "", "---", "");
   });
   return out.join("\n");
 }
@@ -101,6 +129,7 @@ export default function SessionFullView({
   const [curMatch, setCurMatch] = useState(0); // 当前命中在 matches 里的下标
   const [flashTurn, setFlashTurn] = useState<number | null>(null); // 跳转后高亮的轮次
   const [onlyUser, setOnlyUser] = useState(false); // 仅显示用户提问（快速定位）
+  const [exportMode, setExportMode] = useState<ExportMode>("full"); // 导出/复制详略档
   const [curTurn, setCurTurn] = useState(0); // 当前所在轮次（跟随滚动，逐轮导航用）
   const bodyRef = useRef<HTMLDivElement>(null);
   const navRef = useRef(0); // 导航游标（逐轮跳转的真实基准，连点也稳，不受滚动动画影响）
@@ -225,6 +254,23 @@ export default function SessionFullView({
     window.setTimeout(() => setCopied(null), 1800);
   }
 
+  // 按当前档位导出为 .md 文件：dialog 选路径 → 后端写盘。供另一个会话 Read。
+  async function doExport() {
+    const content = turnsToMarkdown(title, turns, exportMode);
+    try {
+      const path = await save({
+        defaultPath: `${safeFileName(title)}.md`,
+        filters: [{ name: "Markdown", extensions: ["md"] }],
+      });
+      if (!path) return; // 用户取消
+      await invoke("export_session_md", { path, content });
+      setCopied("exported");
+      window.setTimeout(() => setCopied(null), 1800);
+    } catch (e) {
+      window.alert("导出失败：" + String(e));
+    }
+  }
+
   return (
     <div className="sf-overlay" onClick={onClose}>
       <div className="sf-modal" onClick={(e) => e.stopPropagation()}>
@@ -234,9 +280,36 @@ export default function SessionFullView({
               {title}
             </h3>
             <div className="sf-head-actions">
+              <select
+                className="sf-export-mode"
+                value={exportMode}
+                onChange={(e) => setExportMode(e.target.value as ExportMode)}
+                disabled={!turns.length}
+                title="导出 / 复制的详略档位"
+              >
+                <option value="full">全文</option>
+                <option value="foldCode">仅折叠代码</option>
+                <option value="brief">精简（每轮留结论）</option>
+              </select>
+              <button
+                className="lc-btn"
+                onClick={doExport}
+                disabled={!turns.length}
+                title="导出为 .md 文件，供另一个会话 Read"
+              >
+                {copied === "exported" ? (
+                  "✓ 已导出"
+                ) : (
+                  <>
+                    <Download size={12} /> 导出 .md
+                  </>
+                )}
+              </button>
               <button
                 className="lc-btn primary"
-                onClick={() => flashCopy("all", turnsToMarkdown(title, turns))}
+                onClick={() =>
+                  flashCopy("all", turnsToMarkdown(title, turns, exportMode))
+                }
                 disabled={!turns.length}
               >
                 {copied === "all" ? (
