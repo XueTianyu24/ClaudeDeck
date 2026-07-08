@@ -92,7 +92,7 @@ function tooltipBox(colors: ThemeColors): React.CSSProperties {
 
 /* ---------- 图 1：费用趋势柱状图 ---------- */
 
-type Period = "day" | "week" | "month";
+type Period = "day" | "week" | "month" | "custom";
 
 type TrendRow = {
   key: string;
@@ -122,7 +122,8 @@ export function CostTrendChart({
   period: Period;
 }) {
   const colors = useThemeColors();
-  const MAX_BARS = period === "day" ? 21 : period === "week" ? 16 : 12;
+  const MAX_BARS =
+    period === "day" ? 21 : period === "week" ? 16 : period === "month" ? 12 : 92;
 
   const data = useMemo(
     () =>
@@ -146,15 +147,16 @@ export function CostTrendChart({
     );
   }
 
-  const periodName = period === "day" ? "按日" : period === "week" ? "按周" : "按月";
+  const periodName =
+    period === "day" ? "按日" : period === "week" ? "按周" : period === "month" ? "按月" : "按日";
+  const sub =
+    period === "custom"
+      ? `自定义区间 · ${data.length} 天`
+      : `${periodName} · 最近 ${data.length} 个周期`;
   const gradId = "cdCostGrad";
 
   return (
-    <ChartCard
-      title="费用趋势"
-      sub={`${periodName} · 最近 ${data.length} 个周期`}
-      className="usage-chart-trend"
-    >
+    <ChartCard title="费用趋势" sub={sub} className="usage-chart-trend">
       <ResponsiveContainer width="100%" height="100%">
         <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <defs>

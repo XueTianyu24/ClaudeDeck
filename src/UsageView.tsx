@@ -98,7 +98,7 @@ function fmtDate(ts: string | null): string {
   ).padStart(2, "0")}`;
 }
 
-type Period = "day" | "week" | "month";
+type Period = "day" | "week" | "month" | "custom";
 
 type PeriodRow = {
   key: string;
@@ -257,6 +257,9 @@ export default function UsageView() {
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [period, setPeriod] = useState<Period>("day");
+  // 自定义区间的起止日期（YYYY-MM-DD，本地时区）；仅 period==="custom" 时生效
+  const [customStart, setCustomStart] = useState("");
+  const [customEnd, setCustomEnd] = useState("");
   const [sessionPage, setSessionPage] = useState(0);
   const [periodPage, setPeriodPage] = useState(0);
   // 展开计费详情的周期行 key（点行切换；切 日/周/月 或重扫后收起）
@@ -295,20 +298,55 @@ export default function UsageView() {
     [report],
   );
 
-  const periodRows = useMemo(
-    () => (report ? groupByPeriod(report.daily, period) : []),
-    [report, period],
-  );
+  const periodRows = useMemo(() => {
+    if (!report) return [];
+    if (period === "custom") {
+      // 自定义区间 = 过滤日桶到 [start,end]，按日展示（字符串日期可直接比较）
+      const filtered = report.daily.filter(
+        (d) =>
+          (!customStart || d.date >= customStart) &&
+          (!customEnd || d.date <= customEnd),
+      );
+      return groupByPeriod(filtered, "day");
+    }
+    return groupByPeriod(report.daily, period);
+  }, [report, period, customStart, customEnd]);
   const maxPeriodCost = useMemo(
     () => Math.max(1e-9, ...periodRows.map((p) => p.cost)),
     [periodRows],
   );
+  // 自定义区间合计（顶部摘要用）
+  const customTotal = useMemo(
+    () =>
+      periodRows.reduce(
+        (a, r) => ({
+          cost: a.cost + r.cost,
+          tokens: a.tokens + r.total_tokens,
+          msgs: a.msgs + r.message_count,
+        }),
+        { cost: 0, tokens: 0, msgs: 0 },
+      ),
+    [periodRows],
+  );
 
-  // 切日/周/月时回到第 1 页并收起详情
+  // 首次拿到数据时给自定义区间一个默认值（最近 30 天，且不早于最早记录）
+  useEffect(() => {
+    if (!report || report.daily.length === 0 || customEnd) return;
+    const dates = report.daily.map((d) => d.date); // 后端已按日期升序
+    const min = dates[0];
+    const max = dates[dates.length - 1];
+    const d = new Date(max + "T00:00:00");
+    d.setDate(d.getDate() - 29);
+    const start = ymd(d);
+    setCustomStart(start < min ? min : start);
+    setCustomEnd(max);
+  }, [report]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 切换周期档 / 改自定义区间时回到第 1 页并收起详情
   useEffect(() => {
     setPeriodPage(0);
     setExpandedPeriod(null);
-  }, [period]);
+  }, [period, customStart, customEnd]);
   // 数据重扫后两张表都回到第 1 页
   useEffect(() => {
     setPeriodPage(0);
@@ -437,18 +475,49 @@ export default function UsageView() {
         <div className="usage-period-head">
           <span className="usage-period-title">周期速览</span>
           <div className="usage-seg">
-            {(["day", "week", "month"] as Period[]).map((p) => (
+            {(["day", "week", "month", "custom"] as Period[]).map((p) => (
               <button
                 key={p}
                 className={`usage-seg-btn ${period === p ? "active" : ""}`}
                 onClick={() => setPeriod(p)}
               >
-                {p === "day" ? "日" : p === "week" ? "周" : "月"}
+                {p === "day" ? "日" : p === "week" ? "周" : p === "month" ? "月" : "自定义"}
               </button>
             ))}
           </div>
-          <span className="usage-period-count">{periodRows.length} 个周期</span>
+          <span className="usage-period-count">
+            {periodRows.length} {period === "custom" ? "天" : "个周期"}
+          </span>
         </div>
+        {period === "custom" && (
+          <div className="usage-custom-range">
+            <label className="usage-custom-field">
+              从
+              <input
+                type="date"
+                value={customStart}
+                min={r.daily[0]?.date}
+                max={customEnd || r.daily[r.daily.length - 1]?.date}
+                onChange={(e) => setCustomStart(e.target.value)}
+              />
+            </label>
+            <label className="usage-custom-field">
+              到
+              <input
+                type="date"
+                value={customEnd}
+                min={customStart || r.daily[0]?.date}
+                max={r.daily[r.daily.length - 1]?.date}
+                onChange={(e) => setCustomEnd(e.target.value)}
+              />
+            </label>
+            <span className="usage-custom-total">
+              区间合计 <b className="usage-cost">{fmtCost(customTotal.cost)}</b> ·{" "}
+              {fmtTokens(customTotal.tokens)} tokens · {customTotal.msgs} 条 ·{" "}
+              {periodRows.length} 天
+            </span>
+          </div>
+        )}
         <CostTrendChart rows={periodRows} period={period} />
         {periodRows.length === 0 ? (
           <div className="usage-period-empty">无带时间戳的用量记录</div>
@@ -457,7 +526,13 @@ export default function UsageView() {
             <table className="sessions usage-table">
               <thead>
                 <tr>
-                  <th>{period === "day" ? "日期" : period === "week" ? "周（周一起）" : "月份"}</th>
+                  <th>
+                    {period === "week"
+                      ? "周（周一起）"
+                      : period === "month"
+                        ? "月份"
+                        : "日期"}
+                  </th>
                   <th className="num">输入</th>
                   <th className="num">输出</th>
                   <th className="num">缓存</th>
