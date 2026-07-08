@@ -5,6 +5,11 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.3] - 2026-07-08
+
+### 修复
+- **会话全文「仅用户提问」不再展开 skill 全文**：调用 skill 时，Claude Code 会把整份 SKILL.md 作为一条 `user` 消息注入（以 `Base directory for this skill: <路径>` 开头、**不含 `<command-name>` 标签**），旧的清洗逻辑只认斜杠命令标签、抓不到它，导致「仅用户提问」模式里把 skill 文档整份展开成一条超长"提问"。修复：`cleanUserText` 增加对该注入格式的识别，折叠为 `⌘ skill: <skill 名>` 占位。显示、复制整会话、导出 .md 三处共用此清洗，一并生效。关键改动：`src/SessionFullView.tsx`（`cleanUserText`）。
+
 ## [0.12.2] - 2026-07-06
 
 ### 新增 / 优化

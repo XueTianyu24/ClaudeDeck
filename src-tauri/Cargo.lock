@@ -489,7 +489,7 @@ dependencies = [
 
 [[package]]
 name = "claudedeck"
-version = "0.12.2"
+version = "0.12.3"
 dependencies = [
  "chrono",
  "dirs 5.0.1",

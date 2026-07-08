@@ -16,12 +16,22 @@ type Turn = { user: Msg | null; assistants: Msg[] };
 // 用户提问清洗：调用 skill / 斜杠命令时，jsonl 会把整个 skill 文档展开进用户消息，
 // 没必要展示。只保留命令名 + 参数（你实际敲的那句），剥掉注入的 skill 正文。
 function cleanUserText(raw: string): string {
+  // 斜杠命令：<command-name>/xxx</command-name>（+ 可选 <command-args>）。
   const nameMatch = raw.match(/<command-name>([^<]*)<\/command-name>/);
   if (nameMatch) {
     const name = nameMatch[1].trim();
     const argsMatch = raw.match(/<command-args>([\s\S]*?)<\/command-args>/);
     const args = argsMatch ? argsMatch[1].trim() : "";
     return args ? `⌘ ${name} ${args}` : `⌘ ${name}`;
+  }
+  // Skill 工具注入：整份 SKILL.md 作为一条 user 消息注入，以
+  // "Base directory for this skill: <路径>" 开头（无 command-name 标签，故上面抓不到）。
+  // 只留一行占位、剥掉整份正文，否则「仅用户提问」里会把 skill 全文展开。
+  const skillMatch = raw.match(/^Base directory for this skill:\s*(.+)/);
+  if (skillMatch) {
+    const p = skillMatch[1].trim();
+    const name = p.split(/[\\/]/).filter(Boolean).pop() || p;
+    return `⌘ skill: ${name}`;
   }
   return raw;
 }
