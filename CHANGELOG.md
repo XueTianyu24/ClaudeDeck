@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.5] - 2026-07-08
+
+### 新增 / 优化
+- **会话监控「收藏夹」补齐会话大小 / 花费 / 时间**：收藏夹每行原本只有标题+项目，现在与「最近会话」一致显示**文件大小 + 累计花费（$）+ 最后活跃时间**（悬停花费看消息数/token，含未定价模型标 `+`）。悬空项（jsonl 已删，`missing`）不显示这些（文件已不存在）。后端 `FavoriteView` 新增 `size_bytes` / `last_active_ms`（`favorites_list` 里一次 `fs::metadata` 同时拿存在性/大小/mtime）；花费复用现有 `costMap`（按 session_id，无需新命令）。关键改动：`src-tauri/src/lib.rs`（`FavoriteView` + `favorites_list`）、`src/App.tsx`（`FavoriteView` 类型 + `favAsSession` + `renderFavRow`）。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过，release 完整构建成功。
+
 ## [0.12.4] - 2026-07-08
 
 ### 新增 / 优化

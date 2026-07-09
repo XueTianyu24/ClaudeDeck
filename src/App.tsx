@@ -199,6 +199,8 @@ type FavoriteView = {
   added_at: number;
   running: boolean;
   missing: boolean;
+  size_bytes: number;
+  last_active_ms: number;
 };
 type SessionMsg = { role: string; text: string; timestamp: string | null };
 // 单会话成本（list_session_costs 返回，按 session_id 合并到会话行）
@@ -728,8 +730,8 @@ function App() {
       project: f.project,
       title: f.title,
       last_prompt: null,
-      last_active_ms: f.added_at * 1000,
-      size_bytes: 0,
+      last_active_ms: f.last_active_ms || f.added_at * 1000,
+      size_bytes: f.size_bytes,
       running: f.running,
     };
   }
@@ -771,6 +773,35 @@ function App() {
           </div>
         </div>
         <div className="fav-actions">
+          {!f.missing && (
+            <>
+              <div className="rs-stats">
+                <span className="rs-size" title="会话记录文件大小">
+                  {fmtBytes(f.size_bytes)}
+                </span>
+                {(() => {
+                  const c = costMap.get(f.session_id);
+                  if (!c) return null;
+                  return (
+                    <span
+                      className="rs-cost"
+                      title={`${c.message_count} 条 assistant 消息 · ${fmtTokens(
+                        c.total_tokens
+                      )} tokens${
+                        c.has_unpriced ? " · 含未定价模型，成本偏低" : ""
+                      }`}
+                    >
+                      {fmtCost(c.cost)}
+                      {c.has_unpriced ? "+" : ""}
+                    </span>
+                  );
+                })()}
+              </div>
+              <span className="rs-ago">
+                {fmtIdle(Date.now() - f.last_active_ms)}
+              </span>
+            </>
+          )}
           <button
             className="rs-launch"
             disabled={!f.cwd || f.running || f.missing}

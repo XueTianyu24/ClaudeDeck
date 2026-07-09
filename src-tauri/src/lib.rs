@@ -2392,7 +2392,7 @@ struct Favorite {
     added_at: u64,
 }
 
-/// 返回给前端的收藏（带实时计算的 running / missing）。
+/// 返回给前端的收藏（带实时计算的 running / missing / 文件大小 / 最后活跃时间）。
 #[derive(Debug, Serialize)]
 struct FavoriteView {
     #[serde(flatten)]
@@ -2401,6 +2401,10 @@ struct FavoriteView {
     running: bool,
     /// jsonl 是否已不存在（会话被删/移走，收藏成了悬空项）
     missing: bool,
+    /// jsonl 文件大小（字节，missing 时 0），与最近会话一致展示
+    size_bytes: u64,
+    /// 最后活跃时间 = jsonl 文件 mtime（unix 毫秒，missing/不可读时 0）
+    last_active_ms: i64,
 }
 
 fn favorites_path() -> Option<PathBuf> {
@@ -2437,10 +2441,23 @@ fn favorites_list() -> Vec<FavoriteView> {
     let mut list = load_favorites();
     list.sort_by(|a, b| b.added_at.cmp(&a.added_at));
     list.into_iter()
-        .map(|f| FavoriteView {
-            running: running.contains(&f.session_id),
-            missing: !Path::new(&f.file).exists(),
-            fav: f,
+        .map(|f| {
+            // 一次 stat 同时拿到：是否存在（missing）、文件大小、最后活跃时间（mtime）
+            let meta = fs::metadata(&f.file).ok();
+            let size_bytes = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let last_active_ms = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            FavoriteView {
+                running: running.contains(&f.session_id),
+                missing: meta.is_none(),
+                size_bytes,
+                last_active_ms,
+                fav: f,
+            }
         })
         .collect()
 }
