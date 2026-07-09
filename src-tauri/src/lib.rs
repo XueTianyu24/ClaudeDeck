@@ -1654,27 +1654,51 @@ fn skill_file_stats(dir: &Path) -> (usize, bool) {
     (files, has_ref)
 }
 
-#[tauri::command]
-fn list_skills() -> Result<Vec<SkillInfo>, String> {
-    let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
-    let tags = read_all_skill_tags();
-    let notes = read_all_skill_notes();
-    let mut out = Vec::new();
-    if !dir.exists() {
-        return Ok(out);
+/// 在 skill 目录里定位 SKILL.md（兼容小写 skill.md：项目 skill 常用小写，
+/// Win 大小写不敏感本就能读到，Mac/Linux 大小写敏感故显式两个都试）。
+fn find_skill_md(dir: &Path) -> Option<PathBuf> {
+    for n in ["SKILL.md", "skill.md"] {
+        let p = dir.join(n);
+        if p.exists() {
+            return Some(p);
+        }
     }
-    for entry in fs::read_dir(&dir)
-        .map_err(|e| format!("读取 skills 目录失败: {e}"))?
-        .flatten()
-    {
+    None
+}
+
+/// 解析 skills 根目录：project_dir=None → 个人 `~/.claude/skills`；
+/// Some(项目目录) → `<项目>/.claude/skills`（校验项目目录存在）。
+fn resolve_skills_root(project_dir: Option<&str>) -> Result<PathBuf, String> {
+    match project_dir {
+        None => skills_dir().ok_or_else(|| "无法定位 ~/.claude/skills 目录".to_string()),
+        Some(pd) => {
+            let p = PathBuf::from(pd);
+            if !p.is_dir() {
+                return Err("项目目录不存在".into());
+            }
+            Ok(p.join(".claude").join("skills"))
+        }
+    }
+}
+
+/// 扫描某个 skills 根目录下的所有 skill（个人 / 项目共用）。root 不存在返回空。
+fn collect_skills(
+    root: &Path,
+    tags: &HashMap<String, Vec<String>>,
+    notes: &HashMap<String, String>,
+) -> Vec<SkillInfo> {
+    let mut out = Vec::new();
+    let Ok(rd) = fs::read_dir(root) else {
+        return out; // 目录不存在 / 不可读 → 空列表（优雅降级）
+    };
+    for entry in rd.flatten() {
         let path = entry.path();
         if !path.is_dir() {
             continue; // 跳过散落的压缩包等非目录
         }
-        let skill_md = path.join("SKILL.md");
-        if !skill_md.exists() {
+        let Some(skill_md) = find_skill_md(&path) else {
             continue; // 没有 SKILL.md 不算有效 skill
-        }
+        };
         let name = path
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -1698,7 +1722,102 @@ fn list_skills() -> Result<Vec<SkillInfo>, String> {
         });
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(out)
+    out
+}
+
+#[tauri::command]
+fn list_skills() -> Result<Vec<SkillInfo>, String> {
+    let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
+    let tags = read_all_skill_tags();
+    let notes = read_all_skill_notes();
+    Ok(collect_skills(&dir, &tags, &notes))
+}
+
+/// 列出某项目 `<项目>/.claude/skills` 下的专属 skill（只读：不带标签/备注，
+/// 避免与个人 skill 按名共用标签库时串号）。
+#[tauri::command]
+fn list_project_skills(project_dir: String) -> Result<Vec<SkillInfo>, String> {
+    let root = resolve_skills_root(Some(&project_dir))?;
+    Ok(collect_skills(&root, &HashMap::new(), &HashMap::new()))
+}
+
+// ── 项目 skill 目录列表：%APPDATA%\ClaudeDeck\skill-projects.json ──────
+// 用户手动添加「要查看专属 skill 的项目目录」，持久化一个绝对路径列表。
+
+/// 返回给前端的项目条目（附展示名 + 是否真的有 .claude/skills）。
+#[derive(Debug, Serialize)]
+struct SkillProject {
+    dir: String,
+    label: String,
+    has_skills: bool,
+}
+
+fn skill_projects_path() -> Option<PathBuf> {
+    launcher_config_dir().map(|d| d.join("skill-projects.json"))
+}
+
+fn load_skill_projects() -> Vec<String> {
+    skill_projects_path()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_skill_projects(list: &[String]) -> Result<(), String> {
+    let dir = launcher_config_dir().ok_or("无法定位配置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let path = skill_projects_path().ok_or("无法定位配置文件")?;
+    let text = serde_json::to_string_pretty(list).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
+}
+
+fn skill_projects_view() -> Vec<SkillProject> {
+    load_skill_projects()
+        .into_iter()
+        .map(|dir| {
+            let p = PathBuf::from(&dir);
+            let label = p
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| dir.clone());
+            let has_skills = p.join(".claude").join("skills").is_dir();
+            SkillProject {
+                dir,
+                label,
+                has_skills,
+            }
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn skill_projects_list() -> Vec<SkillProject> {
+    skill_projects_view()
+}
+
+#[tauri::command]
+fn skill_projects_add(dir: String) -> Result<Vec<SkillProject>, String> {
+    let d = dir.trim().to_string();
+    if d.is_empty() {
+        return Err("目录为空".into());
+    }
+    if !PathBuf::from(&d).is_dir() {
+        return Err("目录不存在".into());
+    }
+    let mut list = load_skill_projects();
+    if !list.iter().any(|x| x == &d) {
+        list.push(d);
+    }
+    save_skill_projects(&list)?;
+    Ok(skill_projects_view())
+}
+
+#[tauri::command]
+fn skill_projects_remove(dir: String) -> Result<Vec<SkillProject>, String> {
+    let mut list = load_skill_projects();
+    list.retain(|x| x != &dir);
+    save_skill_projects(&list)?;
+    Ok(skill_projects_view())
 }
 
 fn safe_skill_name(name: &str) -> Result<(), String> {
@@ -1708,12 +1827,13 @@ fn safe_skill_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 读某个 skill 的 SKILL.md 全文。
+/// 读某个 skill 的 SKILL.md 全文。project_dir 给定则读该项目的专属 skill。
 #[tauri::command]
-fn read_skill(name: String) -> Result<DocView, String> {
+fn read_skill(name: String, project_dir: Option<String>) -> Result<DocView, String> {
     safe_skill_name(&name)?;
-    let dir = skills_dir().ok_or("无法定位 ~/.claude/skills 目录")?;
-    let p = dir.join(&name).join("SKILL.md");
+    let root = resolve_skills_root(project_dir.as_deref())?;
+    let sdir = root.join(&name);
+    let p = find_skill_md(&sdir).unwrap_or_else(|| sdir.join("SKILL.md"));
     let exists = p.exists();
     let content = if exists {
         fs::read_to_string(&p).unwrap_or_default()
@@ -1771,12 +1891,11 @@ fn collect_skill_tree(base: &Path, dir: &Path, out: &mut Vec<SkillFile>) {
 }
 
 /// 列出某 skill 目录的完整文件结构（树形，供展示其组织，不读内容）。
+/// project_dir 给定则列该项目专属 skill 的文件。
 #[tauri::command]
-fn list_skill_files(name: String) -> Result<Vec<SkillFile>, String> {
+fn list_skill_files(name: String, project_dir: Option<String>) -> Result<Vec<SkillFile>, String> {
     safe_skill_name(&name)?;
-    let dir = skills_dir()
-        .ok_or("无法定位 ~/.claude/skills 目录")?
-        .join(&name);
+    let dir = resolve_skills_root(project_dir.as_deref())?.join(&name);
     if !dir.exists() {
         return Err("skill 不存在".into());
     }
@@ -1786,12 +1905,11 @@ fn list_skill_files(name: String) -> Result<Vec<SkillFile>, String> {
 }
 
 /// 在系统文件管理器中打开该 skill 目录（方便用户直接改文件）。
+/// project_dir 给定则打开该项目专属 skill 的目录。
 #[tauri::command]
-fn open_skill_dir(name: String) -> Result<(), String> {
+fn open_skill_dir(name: String, project_dir: Option<String>) -> Result<(), String> {
     safe_skill_name(&name)?;
-    let dir = skills_dir()
-        .ok_or("无法定位 ~/.claude/skills 目录")?
-        .join(&name);
+    let dir = resolve_skills_root(project_dir.as_deref())?.join(&name);
     if !dir.exists() {
         return Err("目录不存在".into());
     }
@@ -3681,6 +3799,10 @@ pub fn run() {
             save_project_md,
             delete_empty_memory_dir,
             list_skills,
+            list_project_skills,
+            skill_projects_list,
+            skill_projects_add,
+            skill_projects_remove,
             read_skill,
             list_skill_files,
             open_skill_dir,

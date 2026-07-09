@@ -4,11 +4,15 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   StickyNote,
   Tag,
   Trash2,
+  User,
+  X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Markdown from "./Markdown";
 
 type SkillInfo = {
@@ -37,6 +41,8 @@ type SkillTrashMeta = {
 type SortKey = "name" | "created_desc" | "created_asc";
 type DocView = { path: string; exists: boolean; content: string; mtime: number };
 type SkillFile = { path: string; is_dir: boolean; size: number };
+// 已添加的「查看专属 skill 的项目目录」（后端 skill_projects_list 返回）
+type SkillProject = { dir: string; label: string; has_skills: boolean };
 
 const UNTAGGED = "__untagged__";
 
@@ -63,6 +69,9 @@ function fmtAgo(ms: number): string {
 
 export default function SkillView() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  // 作用域：null=个人（~/.claude/skills）；字符串=某项目目录（看其 .claude/skills）
+  const [activeProject, setActiveProject] = useState<string | null>(null);
+  const [projects, setProjects] = useState<SkillProject[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterTag, setFilterTag] = useState<string | null>(null);
@@ -84,17 +93,66 @@ export default function SkillView() {
     localStorage.setItem("cd-skill-view", viewMode);
   }, [viewMode]);
 
+  // 项目作用域为只读：不做标签 / 备注 / 删除 / 回收站（避免与个人 skill 按名串、
+  // 也避免误删别人项目里的文件）。需求是「查看该项目的专属 skill」。
+  const readonly = activeProject !== null;
+
   async function reload() {
     try {
-      setSkills(await invoke<SkillInfo[]>("list_skills"));
+      const list = activeProject
+        ? await invoke<SkillInfo[]>("list_project_skills", {
+            projectDir: activeProject,
+          })
+        : await invoke<SkillInfo[]>("list_skills");
+      setSkills(list);
       setErr(null);
     } catch (e) {
       setErr(String(e));
     }
   }
+
+  // 载入已添加的项目目录列表（一次）
   useEffect(() => {
-    reload();
+    invoke<SkillProject[]>("skill_projects_list").then(setProjects).catch(() => {});
   }, []);
+
+  // 作用域变化（含首次挂载）→ 清缓存 + 拉取该作用域的 skill。docMap/treeMap 按
+  // skill 名缓存，个人与项目可能重名，故切换时必须清掉，避免串内容。
+  useEffect(() => {
+    setExpanded(new Set());
+    setDocMap({});
+    setTreeMap({});
+    setFilterTag(null);
+    setEditingTags(null);
+    setEditingNote(null);
+    reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProject]);
+
+  async function addProject() {
+    try {
+      const dir = await openDialog({
+        directory: true,
+        title: "选择项目目录（读取其 .claude/skills 下的专属技能）",
+      });
+      if (!dir || typeof dir !== "string") return;
+      const list = await invoke<SkillProject[]>("skill_projects_add", { dir });
+      setProjects(list);
+      setActiveProject(dir); // 添加后自动切到它
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
+
+  async function removeProject(dir: string) {
+    try {
+      const list = await invoke<SkillProject[]>("skill_projects_remove", { dir });
+      setProjects(list);
+      if (activeProject === dir) setActiveProject(null);
+    } catch (e) {
+      setErr(String(e));
+    }
+  }
 
   async function loadTrash() {
     try {
@@ -150,9 +208,10 @@ export default function SkillView() {
       else n.add(name);
       return n;
     });
+    const projectDir = activeProject ?? undefined;
     if (!docMap[name]) {
       try {
-        const d = await invoke<DocView>("read_skill", { name });
+        const d = await invoke<DocView>("read_skill", { name, projectDir });
         setDocMap((m) => ({ ...m, [name]: d }));
       } catch {
         /* ignore */
@@ -160,7 +219,7 @@ export default function SkillView() {
     }
     if (!treeMap[name]) {
       try {
-        const t = await invoke<SkillFile[]>("list_skill_files", { name });
+        const t = await invoke<SkillFile[]>("list_skill_files", { name, projectDir });
         setTreeMap((m) => ({ ...m, [name]: t }));
       } catch {
         /* ignore */
@@ -182,7 +241,7 @@ export default function SkillView() {
 
   async function openDir(name: string) {
     try {
-      await invoke("open_skill_dir", { name });
+      await invoke("open_skill_dir", { name, projectDir: activeProject ?? undefined });
     } catch (e) {
       setErr(String(e));
     }
@@ -277,6 +336,47 @@ export default function SkillView() {
     }
   }
 
+  // 作用域切换条：个人 + 已添加项目（可切换 / 移除）+ 添加项目目录
+  const scopeBar = (
+    <div className="skill-scope">
+      <span className="skill-scope-label">技能来源</span>
+      <button
+        className={`skill-scope-chip ${!activeProject ? "active" : ""}`}
+        onClick={() => setActiveProject(null)}
+        title="个人技能 ~/.claude/skills"
+      >
+        <User size={12} /> 个人
+      </button>
+      {projects.map((p) => (
+        <span
+          key={p.dir}
+          className={`skill-scope-chip proj ${
+            activeProject === p.dir ? "active" : ""
+          }`}
+        >
+          <button
+            className="skill-scope-pick"
+            onClick={() => setActiveProject(p.dir)}
+            title={p.has_skills ? p.dir : `${p.dir}\n（未发现 .claude/skills）`}
+          >
+            {p.label}
+            {!p.has_skills && <span className="skill-scope-none">无</span>}
+          </button>
+          <button
+            className="skill-scope-x"
+            onClick={() => removeProject(p.dir)}
+            title="从列表移除（不会删除项目里的文件）"
+          >
+            <X size={11} />
+          </button>
+        </span>
+      ))}
+      <button className="skill-scope-add" onClick={addProject}>
+        <FolderPlus size={12} /> 添加项目目录
+      </button>
+    </div>
+  );
+
   if (err) return <div className="banner err">读取技能失败：{err}</div>;
 
   if (trashMode) {
@@ -346,24 +446,34 @@ export default function SkillView() {
   if (!skills.length)
     return (
       <div className="skill-view">
-        <div className="skill-toolbar">
-          <button className="mem-toolbar-btn" onClick={openTrash}>
-            <Trash2 size={12} /> 回收站
-          </button>
-        </div>
+        {scopeBar}
+        {!readonly && (
+          <div className="skill-toolbar">
+            <button className="mem-toolbar-btn" onClick={openTrash}>
+              <Trash2 size={12} /> 回收站
+            </button>
+          </div>
+        )}
         <div className="empty">
           <p>未发现任何技能</p>
-          <span>~/.claude/skills/ 下没有带 SKILL.md 的技能目录</span>
+          <span>
+            {readonly
+              ? "该项目 .claude/skills 下没有带 SKILL.md 的技能目录"
+              : "~/.claude/skills/ 下没有带 SKILL.md 的技能目录"}
+          </span>
         </div>
       </div>
     );
 
   return (
     <div className="skill-view">
+      {scopeBar}
       <div className="skill-toolbar">
         <input
           className="skill-search"
-          placeholder="搜索技能名 / 描述 / 备注 / 标签…"
+          placeholder={
+            readonly ? "搜索技能名 / 描述…" : "搜索技能名 / 描述 / 备注 / 标签…"
+          }
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -396,35 +506,39 @@ export default function SkillView() {
         <span className="mem-toolbar-hint">
           {filtered.length} / {skills.length} 个技能
         </span>
-        <button className="mem-toolbar-btn" onClick={openTrash}>
-          <Trash2 size={12} /> 回收站
-        </button>
+        {!readonly && (
+          <button className="mem-toolbar-btn" onClick={openTrash}>
+            <Trash2 size={12} /> 回收站
+          </button>
+        )}
       </div>
 
-      <div className="skill-filter">
-        <button
-          className={`skill-chip ${filterTag === null ? "active" : ""}`}
-          onClick={() => setFilterTag(null)}
-        >
-          全部 <span className="skill-chip-count">{tagCounts.total}</span>
-        </button>
-        <button
-          className={`skill-chip ${filterTag === UNTAGGED ? "active" : ""}`}
-          onClick={() => setFilterTag(UNTAGGED)}
-        >
-          未标记 <span className="skill-chip-count">{tagCounts.untagged}</span>
-        </button>
-        {allTags.map((t) => (
+      {!readonly && (
+        <div className="skill-filter">
           <button
-            key={t}
-            className={`skill-chip ${filterTag === t ? "active" : ""}`}
-            onClick={() => setFilterTag(t)}
+            className={`skill-chip ${filterTag === null ? "active" : ""}`}
+            onClick={() => setFilterTag(null)}
           >
-            {t}{" "}
-            <span className="skill-chip-count">{tagCounts.map.get(t) || 0}</span>
+            全部 <span className="skill-chip-count">{tagCounts.total}</span>
           </button>
-        ))}
-      </div>
+          <button
+            className={`skill-chip ${filterTag === UNTAGGED ? "active" : ""}`}
+            onClick={() => setFilterTag(UNTAGGED)}
+          >
+            未标记 <span className="skill-chip-count">{tagCounts.untagged}</span>
+          </button>
+          {allTags.map((t) => (
+            <button
+              key={t}
+              className={`skill-chip ${filterTag === t ? "active" : ""}`}
+              onClick={() => setFilterTag(t)}
+            >
+              {t}{" "}
+              <span className="skill-chip-count">{tagCounts.map.get(t) || 0}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className={viewMode === "list" ? "skill-list" : "skill-grid"}>
         {filtered.map((s) => {
@@ -489,18 +603,22 @@ export default function SkillView() {
                     </>
                   )}
                 </button>
-                <button
-                  className="skill-tag-edit"
-                  onClick={() => startEditTags(s)}
-                >
-                  <Tag size={11} /> 标签
-                </button>
-                <button
-                  className="skill-tag-edit"
-                  onClick={() => startEditNote(s)}
-                >
-                  <StickyNote size={11} /> 备注
-                </button>
+                {!readonly && (
+                  <>
+                    <button
+                      className="skill-tag-edit"
+                      onClick={() => startEditTags(s)}
+                    >
+                      <Tag size={11} /> 标签
+                    </button>
+                    <button
+                      className="skill-tag-edit"
+                      onClick={() => startEditNote(s)}
+                    >
+                      <StickyNote size={11} /> 备注
+                    </button>
+                  </>
+                )}
                 <button
                   className="skill-tag-edit"
                   onClick={() => openDir(s.name)}
@@ -508,13 +626,15 @@ export default function SkillView() {
                 >
                   <FolderOpen size={11} /> 打开目录
                 </button>
-                <button
-                  className="skill-tag-edit danger"
-                  onClick={() => deleteSkill(s)}
-                  title="删除此技能（移入回收站）"
-                >
-                  <Trash2 size={11} /> 删除
-                </button>
+                {!readonly && (
+                  <button
+                    className="skill-tag-edit danger"
+                    onClick={() => deleteSkill(s)}
+                    title="删除此技能（移入回收站）"
+                  >
+                    <Trash2 size={11} /> 删除
+                  </button>
+                )}
               </div>
 
               {editingTags === s.name && (

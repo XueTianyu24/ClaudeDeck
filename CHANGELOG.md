@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.6] - 2026-07-09
+
+### 新增 / 优化
+- **技能视图支持查看「项目级专属技能」**：顶部新增「技能来源」切换条——`个人`（`~/.claude/skills`，默认）+ 手动添加的项目目录 + 「＋ 添加项目目录」（原生文件夹选择器）。选中某项目即列出该项目 `<项目>/.claude/skills/` 下的专属技能，查看 SKILL.md 全文 / 文件结构 / 打开目录 / 复制技能名 / 搜索 / 排序均照常。**项目技能为只读**：不做标签 / 备注 / 删除 / 回收站（避免与个人技能按名共用标签库串号，也避免误删项目文件）。添加的项目目录持久化在 `%APPDATA%\ClaudeDeck\skill-projects.json`；移除只从列表删、不动项目文件。兼容项目里小写 `skill.md` 且无 frontmatter 的技能（标题回退为目录名）。关键改动：`src-tauri/src/lib.rs`（`resolve_skills_root`/`collect_skills`/`find_skill_md` 重构 + `list_project_skills` + `skill_projects_list/add/remove` + `read_skill`/`list_skill_files`/`open_skill_dir` 加可选 `project_dir` 参数）、`src/SkillView.tsx`（作用域切换 + 只读模式）、`src/App.css`（`.skill-scope`）。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过，release 完整构建成功。
+
 ## [0.12.5] - 2026-07-08
 
 ### 新增 / 优化

@@ -1094,6 +1094,81 @@ tr.muted {
   min-height: 0;
 }
 
+/* ---- 技能来源作用域切换（个人 / 各项目）---- */
+.skill-scope {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.skill-scope-label {
+  font-size: 12px;
+  color: var(--dim);
+  margin-right: 2px;
+}
+.skill-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 12px;
+  overflow: hidden;
+}
+.skill-scope-chip.active {
+  border-color: var(--green);
+  color: var(--green);
+  background: var(--panel-2);
+}
+/* 「个人」是单个 button.chip；项目是 span.chip 包 pick + x 两个 button */
+button.skill-scope-chip,
+.skill-scope-pick,
+.skill-scope-x,
+.skill-scope-add {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+button.skill-scope-chip,
+.skill-scope-pick {
+  padding: 4px 12px;
+}
+.skill-scope-x {
+  padding: 4px 8px 4px 2px;
+  color: var(--dim);
+}
+.skill-scope-x:hover {
+  color: var(--red);
+}
+.skill-scope-none {
+  font-size: 10px;
+  color: var(--dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0 4px;
+  margin-left: 2px;
+}
+.skill-scope-add {
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  color: var(--dim);
+}
+.skill-scope-add:hover {
+  color: var(--green);
+  border-color: var(--green);
+}
+
 .skill-toolbar {
   display: flex;
   align-items: center;
