@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.7] - 2026-09-04
+
+### 修复
+- **主题选择重启后不记住**：深/浅主题原本只写在 webview 的 `localStorage`，而 Chromium 的 localStorage 是**延迟批量落盘**的（秒级）；托盘「退出」走 `app.exit(0)`、更新重启、build 前 taskkill 都等价硬退出，刚切换的值可能还没写进 leveldb 就被丢弃 → 下次启动读回旧值。现改为**后端同步写文件持久化**（`%APPDATA%/ClaudeDeck/ui-prefs.json`，与 `launcher.json` 同款），`localStorage` 只保留作首屏免闪烁的快取；启动时以后端值为准，后端值读回前不回写，避免旧值覆盖新值。老用户首次升级（文件不存在）自动把当前 localStorage 的主题迁移进去。关键改动：`src-tauri/src/lib.rs`（`UiPrefs` + `get_ui_prefs` / `set_ui_theme`）、`src/App.tsx`（主题读写改走后端 + `themeLoaded` 竞态守卫）。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过。
+
 ## [0.12.6] - 2026-07-09
 
 ### 新增 / 优化

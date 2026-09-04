@@ -2198,6 +2198,54 @@ fn save_launcher_config(cfg: &LauncherConfig) -> Result<(), String> {
     fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
 }
 
+// ── UI 偏好（主题）──────────────────────────────────────────────────
+// 主题原本只写 webview 的 localStorage，而 Chromium 的 localStorage 是**延迟批量**
+// 落盘的（秒级）；托盘「退出」走 `app.exit(0)`、build 前 taskkill、更新重启都等价
+// 硬退出，刚切的值可能还没进 leveldb → 下次启动读回旧值 = 「主题选了不记住」。
+// 故改由后端同步写文件（与 launcher.json 同款），localStorage 只留作首屏免闪烁的快取。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct UiPrefs {
+    /// "dark" | "light"；空串 = 从未设置过（老用户首次升级），前端据此做迁移
+    theme: String,
+}
+impl Default for UiPrefs {
+    fn default() -> Self {
+        Self {
+            theme: String::new(),
+        }
+    }
+}
+
+fn ui_prefs_path() -> Option<PathBuf> {
+    launcher_config_dir().map(|d| d.join("ui-prefs.json"))
+}
+
+#[tauri::command]
+fn get_ui_prefs() -> UiPrefs {
+    let Some(path) = ui_prefs_path() else {
+        return UiPrefs::default();
+    };
+    match fs::read_to_string(&path) {
+        Ok(t) => serde_json::from_str(&t).unwrap_or_default(),
+        Err(_) => UiPrefs::default(),
+    }
+}
+
+#[tauri::command]
+fn set_ui_theme(theme: String) -> Result<(), String> {
+    if theme != "dark" && theme != "light" {
+        return Err(format!("未知主题：{theme}"));
+    }
+    let mut prefs = get_ui_prefs();
+    prefs.theme = theme;
+    let dir = launcher_config_dir().ok_or("无法定位配置目录")?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let path = ui_prefs_path().ok_or("无法定位 UI 偏好文件")?;
+    let text = serde_json::to_string_pretty(&prefs).map_err(|e| format!("序列化失败: {e}"))?;
+    fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
+}
+
 fn launcher_touch_and_sort(cfg: &mut LauncherConfig, path: &str) {
     let ts = now_secs();
     if let Some(entry) = cfg.recent_dirs.iter_mut().find(|r| r.path == path) {
@@ -3833,6 +3881,8 @@ pub fn run() {
             schedule_set_autostart,
             set_close_to_tray,
             set_notify_config,
+            get_ui_prefs,
+            set_ui_theme,
             get_phone_hook_status,
             install_phone_hook,
             uninstall_phone_hook,

@@ -309,9 +309,26 @@ function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
+  // 主题的真相在后端 ui-prefs.json（同步落盘），localStorage 只是首屏免闪烁的快取：
+  // webview 的 localStorage 延迟批量写盘，托盘退出 / taskkill 会吞掉刚切的值。
+  // 后端值读回来之前先不回写，避免用 localStorage 的旧值覆盖掉后端的新值。
+  const themeLoaded = useRef(false);
+  useEffect(() => {
+    invoke<{ theme: string }>("get_ui_prefs")
+      .then((p) => {
+        if (p.theme === "dark" || p.theme === "light") setTheme(p.theme);
+        else invoke("set_ui_theme", { theme }).catch(() => {}); // 空串=老用户首次升级，把当前值迁进去
+        themeLoaded.current = true;
+      })
+      .catch(() => {
+        themeLoaded.current = true;
+      });
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("cd-theme", theme);
+    if (themeLoaded.current) invoke("set_ui_theme", { theme }).catch(() => {});
   }, [theme]);
 
   // 后端检测到翻转时 emit "notify-ding"，前端补一段循环提示音（弹窗由后端发）。
