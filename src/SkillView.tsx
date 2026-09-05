@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { setPref } from "./prefs";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Markdown from "./Markdown";
 
@@ -90,7 +91,7 @@ export default function SkillView() {
     () => (localStorage.getItem("cd-skill-view") as "grid" | "list") || "grid"
   );
   useEffect(() => {
-    localStorage.setItem("cd-skill-view", viewMode);
+    setPref("cd-skill-view", viewMode); // 真相在后端 ui-prefs.json，见 prefs.ts
   }, [viewMode]);
 
   // 项目作用域为只读：不做标签 / 备注 / 删除 / 回收站（避免与个人 skill 按名串、

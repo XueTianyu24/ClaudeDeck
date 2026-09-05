@@ -14,6 +14,7 @@ import LauncherView from "./LauncherView";
 import UsageView from "./UsageView";
 import Markdown from "./Markdown";
 import SessionFullView from "./SessionFullView";
+import { migrateMissing, setPref, syncPrefs } from "./prefs";
 import {
   Apple,
   Archive,
@@ -217,7 +218,7 @@ const DISMISS_KEY = "cd-update-dismissed"; // 记住「忽略此版本」，同�
 // 国内网络时通时断——配上本地代理后检查和下载都稳定走代理。
 const UPDATE_PROXY_KEY = "cd-update-proxy";
 
-// 「按项目浏览」分组默认折叠；展开过哪些组记 localStorage，重启后保持。
+// 「按项目浏览」分组默认折叠；展开过哪些组记进 UI 偏好（后端落盘），重启后保持。
 const GROUPS_EXPANDED_KEY = "cd-groups-expanded";
 function loadExpandedGroups(): Set<string> {
   try {
@@ -230,7 +231,7 @@ function loadExpandedGroups(): Set<string> {
 }
 function saveExpandedGroups(next: Set<string>) {
   try {
-    localStorage.setItem(GROUPS_EXPANDED_KEY, JSON.stringify([...next]));
+    setPref(GROUPS_EXPANDED_KEY, JSON.stringify([...next]));
   } catch {
     /* 存不上就只在本次会话生效 */
   }
@@ -309,26 +310,38 @@ function App() {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
-  // 主题的真相在后端 ui-prefs.json（同步落盘），localStorage 只是首屏免闪烁的快取：
-  // webview 的 localStorage 延迟批量写盘，托盘退出 / taskkill 会吞掉刚切的值。
-  // 后端值读回来之前先不回写，避免用 localStorage 的旧值覆盖掉后端的新值。
-  const themeLoaded = useRef(false);
+  // UI 偏好的真相在后端 ui-prefs.json（同步落盘），localStorage 只是首屏免闪烁的
+  // 快取：webview 的 localStorage 延迟批量写盘，托盘退出 / taskkill 会吞掉刚改的值
+  // （详见 prefs.ts）。启动时以后端值校正内存 state，后端没有的项把本地值迁进去。
   useEffect(() => {
-    invoke<{ theme: string }>("get_ui_prefs")
+    syncPrefs()
       .then((p) => {
-        if (p.theme === "dark" || p.theme === "light") setTheme(p.theme);
-        else invoke("set_ui_theme", { theme }).catch(() => {}); // 空串=老用户首次升级，把当前值迁进去
-        themeLoaded.current = true;
+        if (p["cd-theme"] === "dark" || p["cd-theme"] === "light")
+          setTheme(p["cd-theme"] as Theme);
+        if (p["cd-notify"]) {
+          try {
+            setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(p["cd-notify"]) });
+          } catch {
+            /* 坏 JSON 就维持现状 */
+          }
+        }
+        if (p[UPDATE_PROXY_KEY] !== undefined)
+          setUpdateProxy(p[UPDATE_PROXY_KEY]);
+        if (p[GROUPS_EXPANDED_KEY]) {
+          try {
+            setExpandedGroups(new Set(JSON.parse(p[GROUPS_EXPANDED_KEY])));
+          } catch {
+            /* 坏 JSON 就维持现状 */
+          }
+        }
+        migrateMissing(p);
       })
-      .catch(() => {
-        themeLoaded.current = true;
-      });
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("cd-theme", theme);
-    if (themeLoaded.current) invoke("set_ui_theme", { theme }).catch(() => {});
+    setPref("cd-theme", theme);
   }, [theme]);
 
   // 后端检测到翻转时 emit "notify-ding"，前端补一段循环提示音（弹窗由后端发）。
@@ -346,7 +359,7 @@ function App() {
   // 通知检测在 Rust 后端常驻线程里做（webview 后台会被限流/冻结 setInterval，
   // 放前端会漏发）。这里只把配置推给后端 + 持久化到 localStorage。
   useEffect(() => {
-    localStorage.setItem("cd-notify", JSON.stringify(settings));
+    setPref("cd-notify", JSON.stringify(settings));
     invoke("set_notify_config", {
       cfg: {
         enabled: settings.notifyDone || settings.notifyWaiting,
@@ -1069,7 +1082,7 @@ function App() {
   }
 
   function dismissUpdate() {
-    if (update) localStorage.setItem(DISMISS_KEY, update.latest);
+    if (update) setPref(DISMISS_KEY, update.latest);
     setUpdate(null);
     setUpdateModalOpen(false);
   }
@@ -1259,14 +1272,7 @@ function App() {
                       value={updateProxy}
                       onChange={(e) => {
                         setUpdateProxy(e.target.value);
-                        try {
-                          localStorage.setItem(
-                            UPDATE_PROXY_KEY,
-                            e.target.value.trim()
-                          );
-                        } catch {
-                          /* 存不上则仅本次生效 */
-                        }
+                        setPref(UPDATE_PROXY_KEY, e.target.value.trim());
                       }}
                     />
                   </label>

@@ -2198,24 +2198,15 @@ fn save_launcher_config(cfg: &LauncherConfig) -> Result<(), String> {
     fs::write(&path, text).map_err(|e| format!("写配置失败: {e}"))
 }
 
-// ── UI 偏好（主题）──────────────────────────────────────────────────
-// 主题原本只写 webview 的 localStorage，而 Chromium 的 localStorage 是**延迟批量**
-// 落盘的（秒级）；托盘「退出」走 `app.exit(0)`、build 前 taskkill、更新重启都等价
-// 硬退出，刚切的值可能还没进 leveldb → 下次启动读回旧值 = 「主题选了不记住」。
-// 故改由后端同步写文件（与 launcher.json 同款），localStorage 只留作首屏免闪烁的快取。
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-struct UiPrefs {
-    /// "dark" | "light"；空串 = 从未设置过（老用户首次升级），前端据此做迁移
-    theme: String,
-}
-impl Default for UiPrefs {
-    fn default() -> Self {
-        Self {
-            theme: String::new(),
-        }
-    }
-}
+// ── UI 偏好（主题 / 通知设置 / 更新代理 / 视图状态…）─────────────────
+// 这些偏好原本只写 webview 的 localStorage，而 Chromium 的 localStorage 是**延迟
+// 批量**落盘的（秒级）；托盘「退出」走 `app.exit(0)`、更新重启、build 前 taskkill
+// 都等价硬退出，刚改的值可能还没进 leveldb 就被丢弃 → 下次启动读回旧值（「主题
+// 选了不记住」就是这么来的）。故真相改放后端：一张 key→字符串的扁平表，每次改动
+// 同步写盘（与 launcher.json 同款）；前端的 localStorage 降级为首屏免闪烁的快取。
+// value 一律字符串、与 localStorage 语义一一对应，结构化的值由前端自己
+// JSON.stringify，后端不解释内容——这样以后新增偏好项零后端改动。
+type UiPrefs = std::collections::BTreeMap<String, String>;
 
 fn ui_prefs_path() -> Option<PathBuf> {
     launcher_config_dir().map(|d| d.join("ui-prefs.json"))
@@ -2224,21 +2215,27 @@ fn ui_prefs_path() -> Option<PathBuf> {
 #[tauri::command]
 fn get_ui_prefs() -> UiPrefs {
     let Some(path) = ui_prefs_path() else {
-        return UiPrefs::default();
+        return UiPrefs::new();
     };
-    match fs::read_to_string(&path) {
+    let mut prefs: UiPrefs = match fs::read_to_string(&path) {
         Ok(t) => serde_json::from_str(&t).unwrap_or_default(),
-        Err(_) => UiPrefs::default(),
+        Err(_) => UiPrefs::new(),
+    };
+    // v0.12.7 只存主题、键名是 "theme"；v0.12.8 起统一沿用前端 localStorage 的键名。
+    if let Some(theme) = prefs.remove("theme") {
+        prefs.entry("cd-theme".into()).or_insert(theme);
     }
+    prefs
 }
 
 #[tauri::command]
-fn set_ui_theme(theme: String) -> Result<(), String> {
-    if theme != "dark" && theme != "light" {
-        return Err(format!("未知主题：{theme}"));
+fn set_ui_pref(key: String, value: String) -> Result<(), String> {
+    // 前端自己的偏好键，长度兜底即可（防手滑把整份会话之类塞进配置文件）。
+    if key.is_empty() || key.len() > 64 || value.len() > 256 * 1024 {
+        return Err("非法的偏好键值".into());
     }
     let mut prefs = get_ui_prefs();
-    prefs.theme = theme;
+    prefs.insert(key, value);
     let dir = launcher_config_dir().ok_or("无法定位配置目录")?;
     fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
     let path = ui_prefs_path().ok_or("无法定位 UI 偏好文件")?;
@@ -3882,7 +3879,7 @@ pub fn run() {
             set_close_to_tray,
             set_notify_config,
             get_ui_prefs,
-            set_ui_theme,
+            set_ui_pref,
             get_phone_hook_status,
             install_phone_hook,
             uninstall_phone_hook,

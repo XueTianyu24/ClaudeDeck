@@ -5,6 +5,13 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.8] - 2026-09-05
+
+### 修复 / 优化
+- **其余界面偏好一并搬到后端持久化**：继 v0.12.7 修主题之后，把**通知设置**（桌面通知开关 / 提示音时长 / 完成阈值 / 关窗到托盘）、**更新代理**、**会话分组展开状态**、**技能视图 grid–list**、**「忽略此版本」记录**全部改为后端同步落盘，一并存进 `%APPDATA%/ClaudeDeck/ui-prefs.json`。这些原本同样只在 webview 的 localStorage 里，会被托盘退出 / 更新重启 / taskkill 这类硬退出吞掉（通知阈值等真配置丢了最难察觉）。后端改为通用的 key→字符串偏好表（`get_ui_prefs` / `set_ui_pref`），值的含义由前端解释，**以后新增偏好项零后端改动**；前端新增 `src/prefs.ts` 统一收口（`setPref` 双写快取+后端、`syncPrefs` 启动校正、`migrateMissing` 老用户迁移），localStorage 只保留作首屏免闪烁的快取。老版本升级上来会自动把本地已有设置迁进文件，无需重设。关键改动：`src-tauri/src/lib.rs`（`UiPrefs` 改 BTreeMap + `set_ui_pref`，含 v0.12.7 的 `theme` 旧键迁移）、`src/prefs.ts`（新增）、`src/App.tsx`、`src/SkillView.tsx`。
+
+> 验证：`tsc --noEmit` 与 `cargo check` 均通过。
+
 ## [0.12.7] - 2026-09-04
 
 ### 修复
