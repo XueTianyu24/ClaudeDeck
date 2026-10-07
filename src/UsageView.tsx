@@ -807,8 +807,7 @@ export default function UsageView() {
               )}
               <p className="rates-note">
                 只读参考。硬编码费率（对齐 ccusage / 官方费率卡），缓存写 5m = 1.25×、1h =
-                2×、读 = 0.1× 输入价。Sonnet 5 按标准价 $3/$15（intro $2/$10 至
-                2026-08-31 未建模）。订阅用户视为等效成本参考。
+                2×、读 = 0.1× 输入价（Fable 5.1 为 0.025×，Opus 5.5 为 0.05×）。订阅用户视为等效成本参考。
               </p>
             </div>
           </div>

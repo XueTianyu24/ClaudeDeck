@@ -5,6 +5,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.9] - 2026-10-07
+
+### 修复
+- **用量计费跟上新一代 Claude 模型定价**（对齐官方费率卡 2026-10）：
+  - **Opus 5 / Opus 5.5 原来误按老 Opus 价 $15/$75 计**（模型 id 不含 `opus-4-x`，落进了老价兜底），花费被高估 3–4 倍。现 Opus 5 = $5/$25（同 4.5–4.8），Opus 5.5 = $4/$20、缓存读 $0.20（0.05×）。
+  - **Sonnet 5** 的 $2/$10 已由 intro 价转为标准价（原计划 9/1 涨到 $3/$15 取消），改按 $2/$10；新增 **Sonnet 5.5** 同价。Sonnet 4.x / 3.x 仍为 $3/$15。
+  - 新增 **Fable 5.1 / Mythos 5.1**：输入输出同 Fable 5（$10/$50），缓存读降到 $0.25（0.025×）。
+  - 费率参考表补齐新行（Fable 5.1、Opus 5.5、Sonnet 5.5 单列），说明文字更新。
+  - 关键改动：`src-tauri/src/usage.rs`（`find_pricing` 新增 `OPUS_55` / `SONNET_5` / `FABLE_51` 及匹配顺序、`list_pricing` 表、单测）、`src/UsageView.tsx`（费率说明）。
+
+> 验证：`cargo test --lib` 17/17 通过（新增 Opus 5/5.5、Sonnet 5/5.5、Fable/Mythos 5.1 定价断言），`tsc --noEmit` 通过。
+
 ## [0.12.8] - 2026-09-05
 
 ### 修复 / 优化
