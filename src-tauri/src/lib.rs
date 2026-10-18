@@ -2762,6 +2762,9 @@ fn ps_single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
+/// 开窗固定用的模型。窗口按账号起算、与模型无关；默认模型（Opus 等）一次要多耗约 60 倍额度。
+const WARMUP_MODEL: &str = "haiku";
+
 /// 同步跑一次开窗（`claude -p <prompt>`），带 120s 超时，返回 (成功?, 简述)。
 /// 复用启动器的代理 pre_cmd——开窗要发网络请求，挂代理后用户才连得上。
 fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, String) {
@@ -2775,18 +2778,14 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     // 产生的「ok→OK」垃圾会话 jsonl，避免污染会话列表（曹少 2026-07-03）。
     // uuid 仅含 [0-9a-f-]，直接拼进命令无注入风险。
     let session_id = uuid::Uuid::new_v4().to_string();
+    let base = format!("claude -p --model {WARMUP_MODEL} --session-id {session_id}");
 
     #[cfg(windows)]
     let mut cmd = {
         let script = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-            format!(
-                "{}\nclaude -p --session-id {} {}",
-                pre_cmd.trim(),
-                session_id,
-                ps_single_quote(p)
-            )
+            format!("{}\n{} {}", pre_cmd.trim(), base, ps_single_quote(p))
         } else {
-            format!("claude -p --session-id {} {}", session_id, ps_single_quote(p))
+            format!("{} {}", base, ps_single_quote(p))
         };
         let b64 = ps_encoded(&script);
         let mut c = silent_command("powershell");
@@ -2796,14 +2795,9 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     #[cfg(not(windows))]
     let mut cmd = {
         let inner = if pre_cmd_enabled && !pre_cmd.trim().is_empty() {
-            format!(
-                "{} ; claude -p --session-id {} {}",
-                pre_cmd.trim(),
-                session_id,
-                sh_quote(p)
-            )
+            format!("{} ; {} {}", pre_cmd.trim(), base, sh_quote(p))
         } else {
-            format!("claude -p --session-id {} {}", session_id, sh_quote(p))
+            format!("{} {}", base, sh_quote(p))
         };
         // 登录 shell 以拿到含 claude 的 PATH。
         let mut c = silent_command("sh");

@@ -5,6 +5,14 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.10] - 2026-10-18
+
+### 优化
+- **定时开窗固定用 Haiku**：开窗原本跟随 claude 的默认模型（现为 Opus 5.5），每次带着整套 CLAUDE.md 和技能清单，一次约 $0.36 等价额度；5 小时窗口按账号起算、与模型无关，改为 `claude -p --model haiku` 后实测一次约 $0.006，省约 60 倍。定时触发和「立即开窗一次」都走同一个 `run_warmup`，一处改两处生效。界面说明同步。关键改动：`src-tauri/src/lib.rs`（`WARMUP_MODEL` 常量 + `run_warmup` 命令拼接）、`src/WarmupScheduler.tsx`（说明文字）。
+- 定时开窗面板的「上次结果」和 Routines 教程标题去掉「·」分隔，改用逗号、冒号。
+
+> 验证：`tsc --noEmit`、`cargo check` 通过；新包里点「立即开窗一次」显示开窗成功，抓到的预热会话里回复模型为 `claude-haiku-5-5`，会话随后被自动清理。
+
 ## [0.12.9] - 2026-10-07
 
 ### 修复

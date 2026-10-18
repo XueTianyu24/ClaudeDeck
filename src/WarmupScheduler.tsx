@@ -177,7 +177,7 @@ export default function WarmupScheduler() {
             <AlarmClock size={14} /> 定时开窗
           </h3>
           <p className="lc-hint">
-            到点自动跑 <code>claude -p</code> 发一条极简消息，开启 Claude 的 5
+            到点自动跑 <code>claude -p</code> 用 Haiku 发一条极简消息（省额度），开启 Claude 的 5
             小时使用窗口（窗口从第一条消息起算）。按你的作息安排，比如 07:00
             触发就把 7–12 点占成一个工作窗口。
           </p>
@@ -288,7 +288,7 @@ export default function WarmupScheduler() {
           </button>
           <span className={`ws-last ${cfg.last_run_ok ? "ok" : "bad"}`}>
             {cfg.last_run_ms
-              ? `上次：${fmtTime(cfg.last_run_ms)} · ${cfg.last_run_msg}`
+              ? `上次：${fmtTime(cfg.last_run_ms)}，${cfg.last_run_msg}`
               : "尚未开过窗"}
           </span>
         </div>
@@ -339,7 +339,7 @@ export default function WarmupScheduler() {
             </p>
 
             <div className="ws-guide-sec">
-              <h4>方式 A · 网页（最直观）</h4>
+              <h4>方式 A：网页（最直观）</h4>
               <ol>
                 <li>
                   打开 <code>claude.ai/code/routines</code>，点 <b>New routine</b>
@@ -366,7 +366,7 @@ export default function WarmupScheduler() {
             </div>
 
             <div className="ws-guide-sec">
-              <h4>方式 B · CLI（最快，电脑上直接敲）</h4>
+              <h4>方式 B：CLI（最快，电脑上直接敲）</h4>
               <ol>
                 <li>
                   在任意 Claude Code 会话里输入：
