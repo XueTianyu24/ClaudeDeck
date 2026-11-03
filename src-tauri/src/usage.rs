@@ -16,6 +16,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -370,31 +373,155 @@ struct DayAcc {
     tokens: Tokens,
     cost: f64,
     message_count: u64,
-    models: Vec<String>,
-    by_model: HashMap<String, Agg>,
-    by_session: HashMap<String, Agg>,
+    models: Vec<Arc<str>>,
+    by_model: HashMap<Arc<str>, Agg>,
+    by_session: HashMap<Arc<str>, Agg>,
+}
+
+// ── 逐文件解析缓存 ─────────────────────────────────────────────
+//
+// 历史会话的 jsonl 写完就不再变，没必要每次都把全部记录（本机 2 GB 级）重读一遍。
+// 每个文件解析一次后记住「文件大小 + 修改时间 + 解析出的记录」，两者都没变就直接复用，
+// 只有正在跑的会话（文件在增长）才重读。
+//
+// 缓存的是**去重前**的逐条记录：跨文件去重（resume / fork 会把同一条写进多个文件）
+// 仍在每次汇总时按目录遍历顺序重做，结果与不缓存时一致。
+
+/// 一条 usage 记录（解析时已算好费用与本地日期）。
+struct Rec {
+    /// `message.id + requestId` 的 128 位指纹；缺任一为 None（不参与去重）
+    dedup: Option<[u64; 2]>,
+    model: Arc<str>,
+    tokens: Tokens,
+    cost: f64,
+    priced: bool,
+    /// 本地时区日期 `YYYY-MM-DD`
+    day: Option<Arc<str>>,
+    ts: Option<Box<str>>,
+    cwd: Option<Arc<str>>,
+}
+
+struct FileCache {
+    size: u64,
+    mtime: Option<SystemTime>,
+    recs: Vec<Rec>,
+}
+
+fn file_cache() -> &'static Mutex<HashMap<PathBuf, FileCache>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, FileCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 去重键指纹：两个不同种子的 64 位哈希拼成 128 位（13 万条量级下撞车概率可忽略），
+/// 比存原字符串省内存。缓存只活在进程内，哈希无需跨版本稳定。
+fn dedup_key(mid: &str, rid: &str) -> [u64; 2] {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let h = |seed: u8| {
+        let mut s = DefaultHasher::new();
+        seed.hash(&mut s);
+        mid.hash(&mut s);
+        rid.hash(&mut s);
+        s.finish()
+    };
+    [h(0), h(1)]
+}
+
+/// 同值共用一个 Arc（一个文件里模型 / 日期 / cwd 只有寥寥几种），省内存。
+fn intern(pool: &mut Vec<Arc<str>>, v: &str) -> Arc<str> {
+    if let Some(a) = pool.iter().rev().find(|a| &***a == v) {
+        return a.clone();
+    }
+    let a: Arc<str> = Arc::from(v);
+    pool.push(a.clone());
+    a
+}
+
+/// 解析一个 jsonl 的全部 usage 行。打不开返回 None（本次跳过、不进缓存，下次再试）。
+fn parse_file(path: &Path) -> Option<Vec<Rec>> {
+    let file = File::open(path).ok()?;
+    let mut recs = Vec::new();
+    let mut models: Vec<Arc<str>> = Vec::new();
+    let mut days: Vec<Arc<str>> = Vec::new();
+    let mut cwds: Vec<Arc<str>> = Vec::new();
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_str::<RawEntry>(line) else {
+            continue; // 坏行跳过
+        };
+        let Some(msg) = entry.message else { continue };
+        let Some(usage) = msg.usage else { continue };
+        let Some(model) = msg.model.filter(|m| !m.is_empty()) else {
+            continue;
+        };
+        if model == "<synthetic>" {
+            continue;
+        }
+        let dedup = match (msg.id.as_deref(), entry.request_id.as_deref()) {
+            (Some(mid), Some(rid)) => Some(dedup_key(mid, rid)),
+            _ => None,
+        };
+        let (c5, c1) = split_cache(&usage);
+        let tokens = Tokens {
+            input: usage.input_tokens.unwrap_or(0),
+            output: usage.output_tokens.unwrap_or(0),
+            cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+            cache_write_5m: c5,
+            cache_write_1h: c1,
+        };
+        // 零用量又不带去重键的行汇总时必被跳过，不存；带去重键的要留着
+        // （它会挡掉后面同键的行，与逐行现算时的行为一致）。
+        if tokens.total() == 0 && dedup.is_none() {
+            continue;
+        }
+        recs.push(Rec {
+            dedup,
+            priced: find_pricing(&model).is_some(),
+            cost: tokens.cost(&model).unwrap_or(0.0),
+            model: intern(&mut models, &model),
+            tokens,
+            day: entry
+                .timestamp
+                .as_deref()
+                .and_then(local_date)
+                .map(|d| intern(&mut days, &d)),
+            ts: entry.timestamp.map(String::into_boxed_str),
+            cwd: entry.cwd.as_deref().map(|c| intern(&mut cwds, c)),
+        });
+    }
+    recs.shrink_to_fit();
+    Some(recs)
 }
 
 /// 扫 `~/.claude/projects/*/*.jsonl`，产出用量报告。
 pub(crate) fn build_report() -> Result<UsageReport, String> {
     let root = super::projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
+    build_report_in(&root)
+}
+
+fn build_report_in(root: &Path) -> Result<UsageReport, String> {
     if !root.exists() {
         return Ok(empty_report());
     }
 
-    // 全局去重集合：key = "msgid\u{1}reqid"，两者都在才去重；缺任一不去重。
-    let mut seen: HashSet<String> = HashSet::new();
+    // 汇总全程持锁：会话页和用量页同时来拉时排队，后到的直接吃缓存，不会重复解析。
+    let mut cache = file_cache().lock().unwrap_or_else(|e| e.into_inner());
+    let mut present: HashSet<PathBuf> = HashSet::new();
+
+    // 全局去重集合：key = message.id + requestId 指纹，两者都在才去重；缺任一不去重。
+    let mut seen: HashSet<[u64; 2]> = HashSet::new();
 
     // 会话级与模型级累加器
-    use std::collections::HashMap;
     let mut sessions: HashMap<String, SessionAcc> = HashMap::new();
-    let mut models: HashMap<String, (Agg, bool)> = HashMap::new();
-    let mut daily: HashMap<String, DayAcc> = HashMap::new();
-    let mut unpriced: HashSet<String> = HashSet::new();
+    let mut models: HashMap<Arc<str>, (Agg, bool)> = HashMap::new();
+    let mut daily: HashMap<Arc<str>, DayAcc> = HashMap::new();
+    let mut unpriced: HashSet<Arc<str>> = HashSet::new();
     let mut scanned_files = 0usize;
 
     let project_dirs =
-        std::fs::read_dir(&root).map_err(|e| format!("读取 projects 目录失败: {e}"))?;
+        std::fs::read_dir(root).map_err(|e| format!("读取 projects 目录失败: {e}"))?;
     for pd in project_dirs.flatten() {
         let pdir = pd.path();
         if !pdir.is_dir() {
@@ -415,119 +542,125 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
                 continue;
             }
             scanned_files += 1;
-            let session_id = fpath
+            let session_id: Arc<str> = fpath
                 .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map(|s| Arc::from(s.to_string_lossy().as_ref()))
+                .unwrap_or_else(|| Arc::from(""));
 
             let acc = sessions
-                .entry(session_id.clone())
-                .or_insert_with(|| SessionAcc::new(session_id.clone(), project.clone()));
+                .entry(session_id.to_string())
+                .or_insert_with(|| SessionAcc::new(session_id.to_string(), project.clone()));
 
-            let file = match File::open(&fpath) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
+            // 先取大小 / 修改时间再读内容：读的过程中文件若又变长，下次比对不符会重读，不会漏。
+            let meta = fe.metadata().ok();
+            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mtime = meta.as_ref().and_then(|m| m.modified().ok());
+            present.insert(fpath.clone());
+            let fresh = matches!(cache.get(&fpath), Some(c) if c.size == size && c.mtime == mtime);
+            if !fresh {
+                match parse_file(&fpath) {
+                    Some(recs) => {
+                        cache.insert(fpath.clone(), FileCache { size, mtime, recs });
+                    }
+                    None => {
+                        cache.remove(&fpath);
+                        continue;
+                    }
                 }
-                let Ok(entry) = serde_json::from_str::<RawEntry>(line) else {
-                    continue; // 坏行跳过
-                };
-                let Some(msg) = entry.message else { continue };
-                let Some(usage) = msg.usage else { continue };
-                let Some(model) = msg.model.filter(|m| !m.is_empty()) else {
-                    continue;
-                };
-                if model == "<synthetic>" {
-                    continue;
-                }
+            }
+            let Some(fc) = cache.get(&fpath) else { continue };
 
+            // 本文件计入记录的最早 / 最晚时间戳，文件末尾再并进会话（省掉逐条分配字符串）
+            let mut file_first: Option<&str> = None;
+            let mut file_last: Option<&str> = None;
+
+            for r in &fc.recs {
                 // 去重：仅当 message.id 与 requestId 都在时
-                if let (Some(mid), Some(rid)) = (msg.id.as_deref(), entry.request_id.as_deref()) {
-                    let key = format!("{mid}\u{1}{rid}");
-                    if !seen.insert(key) {
+                if let Some(k) = r.dedup {
+                    if !seen.insert(k) {
                         continue; // 已计过
                     }
                 }
-
-                let (c5, c1) = split_cache(&usage);
-                let tok = Tokens {
-                    input: usage.input_tokens.unwrap_or(0),
-                    output: usage.output_tokens.unwrap_or(0),
-                    cache_read: usage.cache_read_input_tokens.unwrap_or(0),
-                    cache_write_5m: c5,
-                    cache_write_1h: c1,
-                };
+                let tok = &r.tokens;
                 if tok.total() == 0 {
                     continue; // 无实际用量
                 }
-
-                let priced = find_pricing(&model).is_some();
-                let cost = tok.cost(&model).unwrap_or(0.0);
-                if !priced {
+                let model = &r.model;
+                if !r.priced {
                     unpriced.insert(model.clone());
                 }
 
                 // 会话累加
-                acc.agg.tokens.add(&tok);
-                acc.agg.cost += cost;
+                acc.agg.tokens.add(tok);
+                acc.agg.cost += r.cost;
                 acc.agg.message_count += 1;
-                if !priced {
+                if !r.priced {
                     acc.has_unpriced = true;
                 }
-                if !acc.models.contains(&model) {
+                if !acc.models.contains(model) {
                     acc.models.push(model.clone());
                 }
                 if acc.cwd.is_none() {
-                    if let Some(c) = entry.cwd.clone() {
-                        acc.cwd = Some(c);
+                    if let Some(c) = &r.cwd {
+                        acc.cwd = Some(c.to_string());
                     }
                 }
 
                 // 日桶累加（本地时区日期）；无可解析时间戳的条目不计入日 / 周 / 月速览，
                 // 但仍计入会话 / 模型 / 总计。
-                if let Some(day) = entry.timestamp.as_deref().and_then(local_date) {
-                    let d = daily.entry(day).or_default();
-                    d.tokens.add(&tok);
-                    d.cost += cost;
+                if let Some(day) = &r.day {
+                    let d = daily.entry(day.clone()).or_default();
+                    d.tokens.add(tok);
+                    d.cost += r.cost;
                     d.message_count += 1;
-                    if !d.models.contains(&model) {
+                    if !d.models.contains(model) {
                         d.models.push(model.clone());
                     }
                     // 当日按模型 / 按会话拆分（周期速览展开详情用）
                     let bm = d.by_model.entry(model.clone()).or_default();
-                    bm.tokens.add(&tok);
-                    bm.cost += cost;
+                    bm.tokens.add(tok);
+                    bm.cost += r.cost;
                     bm.message_count += 1;
                     let bs = d.by_session.entry(session_id.clone()).or_default();
-                    bs.tokens.add(&tok);
-                    bs.cost += cost;
+                    bs.tokens.add(tok);
+                    bs.cost += r.cost;
                     bs.message_count += 1;
                 }
 
-                if let Some(ts) = entry.timestamp {
-                    match &acc.first_ts {
-                        Some(f) if *f <= ts => {}
-                        _ => acc.first_ts = Some(ts.clone()),
+                if let Some(ts) = r.ts.as_deref() {
+                    if file_first.is_none_or(|f| ts < f) {
+                        file_first = Some(ts);
                     }
-                    match &acc.last_ts {
-                        Some(l) if *l >= ts => {}
-                        _ => acc.last_ts = Some(ts),
+                    if file_last.is_none_or(|l| ts > l) {
+                        file_last = Some(ts);
                     }
                 }
 
                 // 模型累加
-                let e = models.entry(model.clone()).or_insert_with(|| (Agg::default(), priced));
-                e.0.tokens.add(&tok);
-                e.0.cost += cost;
+                let e = models
+                    .entry(model.clone())
+                    .or_insert_with(|| (Agg::default(), r.priced));
+                e.0.tokens.add(tok);
+                e.0.cost += r.cost;
                 e.0.message_count += 1;
+            }
+
+            if let Some(ts) = file_first {
+                if acc.first_ts.as_deref().is_none_or(|f| ts < f) {
+                    acc.first_ts = Some(ts.to_string());
+                }
+            }
+            if let Some(ts) = file_last {
+                if acc.last_ts.as_deref().is_none_or(|l| ts > l) {
+                    acc.last_ts = Some(ts.to_string());
+                }
             }
         }
     }
+
+    // 已删除的会话文件移出缓存
+    cache.retain(|p, _| present.contains(p));
+    drop(cache);
 
     // 组装会话列表（按 cost 高→低）
     let mut sess_out: Vec<SessionUsage> = sessions
@@ -541,7 +674,7 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
     let mut model_out: Vec<ModelUsage> = models
         .into_iter()
         .map(|(model, (agg, priced))| ModelUsage {
-            model,
+            model: model.to_string(),
             input: agg.tokens.input,
             output: agg.tokens.output,
             cache_read: agg.tokens.cache_read,
@@ -567,11 +700,11 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
     }
 
     // 日桶（按日期升序，前端再聚合周 / 月）
-    let slices = |m: HashMap<String, Agg>| -> Vec<DaySlice> {
+    let slices = |m: HashMap<Arc<str>, Agg>| -> Vec<DaySlice> {
         let mut v: Vec<DaySlice> = m
             .into_iter()
             .map(|(key, a)| DaySlice {
-                key,
+                key: key.to_string(),
                 total_tokens: a.tokens.total(),
                 cost: a.cost,
                 message_count: a.message_count,
@@ -583,7 +716,7 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
     let mut daily_out: Vec<DayUsage> = daily
         .into_iter()
         .map(|(date, d)| DayUsage {
-            date,
+            date: date.to_string(),
             input: d.tokens.input,
             output: d.tokens.output,
             cache_read: d.tokens.cache_read,
@@ -592,14 +725,14 @@ pub(crate) fn build_report() -> Result<UsageReport, String> {
             total_tokens: d.tokens.total(),
             cost: d.cost,
             message_count: d.message_count,
-            models: d.models,
+            models: d.models.iter().map(|m| m.to_string()).collect(),
             by_model: slices(d.by_model),
             by_session: slices(d.by_session),
         })
         .collect();
     daily_out.sort_by(|a, b| a.date.cmp(&b.date));
 
-    let mut unpriced_models: Vec<String> = unpriced.into_iter().collect();
+    let mut unpriced_models: Vec<String> = unpriced.iter().map(|m| m.to_string()).collect();
     unpriced_models.sort();
 
     Ok(UsageReport {
@@ -642,7 +775,7 @@ struct SessionAcc {
     session_id: String,
     project: String,
     cwd: Option<String>,
-    models: Vec<String>,
+    models: Vec<Arc<str>>,
     agg: Agg,
     has_unpriced: bool,
     first_ts: Option<String>,
@@ -675,7 +808,7 @@ impl SessionAcc {
             project: self.project,
             project_label,
             cwd: self.cwd,
-            models: self.models,
+            models: self.models.iter().map(|m| m.to_string()).collect(),
             input: self.agg.tokens.input,
             output: self.agg.tokens.output,
             cache_read: self.agg.tokens.cache_read,
@@ -716,8 +849,8 @@ impl Clone for SessionUsage {
 }
 
 #[tauri::command]
-pub(crate) fn list_token_usage() -> Result<UsageReport, String> {
-    build_report()
+pub(crate) async fn list_token_usage() -> Result<UsageReport, String> {
+    super::off_main(build_report).await
 }
 
 /// 会话监控页用的精简单会话成本（按 session_id 索引）。
@@ -733,7 +866,11 @@ pub(crate) struct SessionCost {
 }
 
 #[tauri::command]
-pub(crate) fn list_session_costs() -> Result<Vec<SessionCost>, String> {
+pub(crate) async fn list_session_costs() -> Result<Vec<SessionCost>, String> {
+    super::off_main(session_costs).await
+}
+
+fn session_costs() -> Result<Vec<SessionCost>, String> {
     let report = build_report()?;
     Ok(report
         .sessions
@@ -799,6 +936,48 @@ mod tests {
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-12
+    }
+
+    /// 解析缓存 + 跨文件去重：resume 复制到新文件的同一条消息只计一次；
+    /// 文件变长后重读；删掉的文件不再计入。
+    #[test]
+    fn report_cache_dedup_and_refresh() {
+        let root = std::env::temp_dir()
+            .join(format!("claudedeck-usage-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let proj = root.join("C--proj");
+        std::fs::create_dir_all(&proj).unwrap();
+        let line = |mid: &str, out: u64| {
+            format!(
+                r#"{{"requestId":"req_{mid}","timestamp":"2026-10-01T08:00:00.000Z","message":{{"id":"{mid}","model":"claude-opus-5-5","usage":{{"input_tokens":0,"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let a = proj.join("a.jsonl");
+        let b = proj.join("b.jsonl");
+        std::fs::write(&a, format!("{}\n{}\n", line("m1", 100), line("m2", 200))).unwrap();
+        // b 是从 a resume 出来的：开头复制了 m1
+        std::fs::write(&b, format!("{}\n{}\n", line("m1", 100), line("m3", 400))).unwrap();
+
+        let r = build_report_in(&root).unwrap();
+        assert_eq!(r.total_tokens, 700, "m1 只应计一次");
+        assert_eq!(r.sessions.iter().map(|s| s.message_count).sum::<u64>(), 3);
+        // 第二次走缓存，结果不变
+        assert_eq!(build_report_in(&root).unwrap().total_tokens, 700);
+
+        // a 追加一条（正在跑的会话）→ 重读
+        let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
+        use std::io::Write;
+        writeln!(f, "{}", line("m4", 50)).unwrap();
+        drop(f);
+        assert_eq!(build_report_in(&root).unwrap().total_tokens, 750);
+
+        // 删掉 b → m3 消失，m1 仍由 a 计入
+        std::fs::remove_file(&b).unwrap();
+        let r = build_report_in(&root).unwrap();
+        assert_eq!(r.total_tokens, 350);
+        assert_eq!(r.session_count, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

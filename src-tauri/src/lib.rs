@@ -553,9 +553,22 @@ fn force_quit_and_relaunch(app: tauri::AppHandle) -> Result<(), String> {
 // 与 list_sessions（运行中状态）互补：这里列「最近 / 历史」会话，关机后仍在，
 // 解决多开会话「关机后忘了开过哪些、该去哪个目录重开、聊到哪了」。
 // 性能：先按文件 mtime 排序、截到上限，只对入选会话**读头部找 cwd + 尾部找
-// aiTitle/lastPrompt**，不全量解析大 jsonl。
+// aiTitle/lastPrompt**，不全量解析大 jsonl；读过的按「大小 + 修改时间」缓存，
+// 没变的文件不再重读（见 recent_cache）。
 
-#[derive(Debug, Serialize)]
+/// 把耗时的读盘活放到后台线程池跑。Tauri 的同步命令在主线程执行，
+/// 跑多久整个窗口就冻多久；会话越多越明显，故重命令一律走这里。
+pub(crate) async fn off_main<T, F>(f: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("后台任务失败: {e}"))?
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct RecentSession {
     session_id: String,
     /// jsonl 绝对路径（前端读详情用）
@@ -684,8 +697,46 @@ fn build_recent_session(
     }
 }
 
+/// 会话列表行缓存：jsonl 路径 → (文件大小, mtime ms, 解析结果)。大小和修改时间都没变
+/// 就直接复用，不再读头尾；「运行中」标记每次现算（它不来自文件内容）。
+fn recent_cache() -> &'static Mutex<HashMap<PathBuf, (u64, i64, RecentSession)>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, i64, RecentSession)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 带缓存的 build_recent_session：命中缓存只克隆一份并刷新「运行中」。
+fn cached_recent_session(
+    path: &Path,
+    mt: i64,
+    size: u64,
+    running: &HashSet<String>,
+) -> RecentSession {
+    {
+        let cache = recent_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((s, m, r)) = cache.get(path) {
+            if *s == size && *m == mt {
+                let mut r = r.clone();
+                r.running = running.contains(&r.session_id);
+                return r;
+            }
+        }
+    }
+    // 读头尾不持锁，免得列表和检索同时进来时互相等
+    let r = build_recent_session(path, mt, size, running);
+    recent_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), (size, mt, r.clone()));
+    r
+}
+
 #[tauri::command]
-fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, String> {
+async fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, String> {
+    off_main(move || recent_sessions(limit)).await
+}
+
+fn recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, String> {
     let root = projects_dir().ok_or("无法定位 ~/.claude/projects 目录")?;
     if !root.exists() {
         return Ok(Vec::new());
@@ -733,13 +784,22 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
         }
     }
 
+    // 已删除的会话文件移出缓存
+    {
+        let present: HashSet<&PathBuf> = files.iter().map(|f| &f.0).collect();
+        recent_cache()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|p, _| present.contains(p));
+    }
+
     // 按最后活跃倒序，截到上限，只对入选者解析头尾。
     files.sort_by(|a, b| b.1.cmp(&a.1));
     files.truncate(cap);
 
     let mut out = Vec::new();
     for (path, mt, size) in files {
-        out.push(build_recent_session(&path, mt, size, &running));
+        out.push(cached_recent_session(&path, mt, size, &running));
     }
     // 运行中置顶，其余维持 mtime 倒序。
     out.sort_by(|a, b| {
@@ -754,7 +814,11 @@ fn list_recent_sessions(limit: Option<usize>) -> Result<Vec<RecentSession>, Stri
 /// 粗匹配关键词（整文件 contains，不逐行解析 JSON；命中后才解析头尾拿元数据）。
 /// weeks = 时间范围周数（None / 0 = 全部，作性能旋钮）。结果按运行中置顶 + mtime 倒序，至多 80 条。
 #[tauri::command]
-fn search_sessions(query: String, weeks: Option<u32>) -> Result<Vec<RecentSession>, String> {
+async fn search_sessions(query: String, weeks: Option<u32>) -> Result<Vec<RecentSession>, String> {
+    off_main(move || search_sessions_blocking(query, weeks)).await
+}
+
+fn search_sessions_blocking(query: String, weeks: Option<u32>) -> Result<Vec<RecentSession>, String> {
     let q = query.trim().to_lowercase();
     if q.is_empty() {
         return Ok(Vec::new());
@@ -840,7 +904,7 @@ fn search_sessions(query: String, weeks: Option<u32>) -> Result<Vec<RecentSessio
                 }
             }
             if matched {
-                hits.push(build_recent_session(&p, mt, size, &running));
+                hits.push(cached_recent_session(&p, mt, size, &running));
             }
         }
     }
@@ -928,17 +992,20 @@ fn parse_session_msgs(file: &str) -> Result<Vec<SessionMsg>, String> {
 
 /// 读某会话尾部最近 max 条真实对话消息（快速预览用）。
 #[tauri::command]
-fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>, String> {
-    let n = max.unwrap_or(8).max(1);
-    let mut msgs = parse_session_msgs(&file)?;
-    let start = msgs.len().saturating_sub(n);
-    Ok(msgs.split_off(start))
+async fn read_session_tail(file: String, max: Option<usize>) -> Result<Vec<SessionMsg>, String> {
+    off_main(move || {
+        let n = max.unwrap_or(8).max(1);
+        let mut msgs = parse_session_msgs(&file)?;
+        let start = msgs.len().saturating_sub(n);
+        Ok(msgs.split_off(start))
+    })
+    .await
 }
 
 /// 读某会话的完整对话（全部 user/assistant 文本，按原顺序），供「查看全文」用。
 #[tauri::command]
-fn read_session_full(file: String) -> Result<Vec<SessionMsg>, String> {
-    parse_session_msgs(&file)
+async fn read_session_full(file: String) -> Result<Vec<SessionMsg>, String> {
+    off_main(move || parse_session_msgs(&file)).await
 }
 
 /// 删除单个会话记录文件（jsonl）。物理删除、不可恢复，前端负责二次确认。
