@@ -2413,6 +2413,73 @@ button.skill-scope-chip,
 .ws-last.bad {
   color: var(--dim);
 }
+.ws-last.warn,
+.ws-window .warn,
+.ws-hist-msg.warn {
+  color: var(--amber);
+}
+.ws-last.fail,
+.ws-hist-msg.fail {
+  color: var(--red);
+}
+.ws-last.miss,
+.ws-hist-msg.miss {
+  color: var(--dim);
+}
+.ws-hist-msg.ok {
+  color: var(--green);
+}
+/* 当前窗口重置时间 + 待补开 */
+.ws-window {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text);
+}
+/* 开窗记录（可展开） */
+.ws-hist {
+  font-size: 12px;
+}
+.ws-hist summary {
+  cursor: pointer;
+  color: var(--dim);
+  user-select: none;
+}
+.ws-hist ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.ws-hist li {
+  display: flex;
+  gap: 12px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.ws-hist li:last-child {
+  border-bottom: none;
+}
+.ws-hist-time {
+  flex: 0 0 auto;
+  min-width: 78px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.ws-hist-kind {
+  flex: 0 0 auto;
+  min-width: 64px;
+  color: var(--text);
+}
+.ws-hist-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* ── 用量计费 ── */
 .usage-view {

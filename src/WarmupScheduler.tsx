@@ -19,6 +19,25 @@ type ScheduleConfig = {
   last_run_ms: number;
   last_run_ok: boolean;
   last_run_msg: string;
+  last_run_state: string; // fresh / inside / unknown / fail
+  last_reset_ms: number; // 官方返回的当前窗口重置时间，0=未知
+  relay_at_ms: number; // 待补开时间，0=无
+  history: WarmupRecord[];
+};
+type WarmupRecord = {
+  at_ms: number;
+  kind: string; // 「定时 07:00」「补开」「手动」
+  state: string; // fresh / inside / unknown / fail / missed
+  msg: string;
+};
+
+// 结果类别 → 文字颜色
+const STATE_CLASS: Record<string, string> = {
+  fresh: "ok",
+  unknown: "ok",
+  inside: "warn",
+  fail: "fail",
+  missed: "miss",
 };
 
 const DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"]; // 0=周一
@@ -43,6 +62,18 @@ function fmtTime(ms: number): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(
     d.getMinutes()
   )}`;
+}
+
+// 今天只显示 HH:MM，明天加「次日」，更远显示月/日
+function fmtClock(ms: number): string {
+  const d = new Date(ms);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const hm = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const today = new Date();
+  const tomorrow = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1);
+  if (d.toDateString() === today.toDateString()) return hm;
+  if (d.toDateString() === tomorrow.toDateString()) return `次日 ${hm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
 export default function WarmupScheduler() {
@@ -70,6 +101,15 @@ export default function WarmupScheduler() {
   }
   useEffect(() => {
     reload();
+    // 定时开窗在后台跑，面板开着时也要跟上最新结果
+    const id = window.setInterval(async () => {
+      try {
+        setCfg(await invoke<ScheduleConfig>("schedule_get_config"));
+      } catch {
+        /* 下次再试 */
+      }
+    }, 30_000);
+    return () => window.clearInterval(id);
   }, []);
 
   function flash(t: string) {
@@ -148,7 +188,7 @@ export default function WarmupScheduler() {
     try {
       const c = await invoke<ScheduleConfig>("schedule_run_now");
       setCfg(c);
-      flash("✅ 已手动开窗一次");
+      flash(c.last_run_msg || "已手动开窗一次");
     } catch (e) {
       setErr("开窗失败：" + String(e));
       reload(); // 拉回 last_run 记录
@@ -286,14 +326,44 @@ export default function WarmupScheduler() {
           <button className="lc-btn" disabled={busy} onClick={runNow}>
             {busy ? "开窗中…" : "立即开窗一次（测试）"}
           </button>
-          <span className={`ws-last ${cfg.last_run_ok ? "ok" : "bad"}`}>
+          <span
+            className={`ws-last ${
+              STATE_CLASS[cfg.last_run_state] ?? (cfg.last_run_ok ? "ok" : "fail")
+            }`}
+          >
             {cfg.last_run_ms
               ? `上次：${fmtTime(cfg.last_run_ms)}，${cfg.last_run_msg}`
               : "尚未开过窗"}
           </span>
         </div>
+        {(cfg.last_reset_ms > Date.now() || cfg.relay_at_ms > 0) && (
+          <div className="ws-window">
+            {cfg.last_reset_ms > Date.now() && (
+              <span>当前窗口 {fmtClock(cfg.last_reset_ms)} 重置</span>
+            )}
+            {cfg.relay_at_ms > 0 && (
+              <span className="warn">{fmtClock(cfg.relay_at_ms)} 自动补开</span>
+            )}
+          </div>
+        )}
+        {cfg.history?.length > 0 && (
+          <details className="ws-hist">
+            <summary>开窗记录（最近 {cfg.history.length} 次）</summary>
+            <ul>
+              {cfg.history.map((r) => (
+                <li key={`${r.at_ms}-${r.kind}`}>
+                  <span className="ws-hist-time">{fmtTime(r.at_ms)}</span>
+                  <span className="ws-hist-kind">{r.kind}</span>
+                  <span className={`ws-hist-msg ${STATE_CLASS[r.state] ?? ""}`}>
+                    {r.msg}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
         <p className="lc-hint">
-          注意：5 小时窗口锚定「那一窗的第一条消息」。若触发前你已有活跃窗口，这次只会落在旧窗口里、不会顺延；电脑关机时无法触发（物理限制）。开窗会复用启动器里配置的代理命令。
+          注意：5 小时窗口从「那一窗的第一条消息」起算。若触发时已有窗口在计时（比如你自己先用了 Claude），这次会落在旧窗口里，app 会在那个窗口到期后自动补开一次，让窗口接上。电脑睡眠或关机时无法触发，开窗记录里会标出错过的那几次。开窗会复用启动器里配置的代理命令。
         </p>
       </div>
 

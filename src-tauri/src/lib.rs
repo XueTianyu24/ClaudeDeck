@@ -2772,6 +2772,14 @@ struct ScheduleConfig {
     last_run_ms: i64,
     last_run_ok: bool,
     last_run_msg: String,
+    /// 上次开窗的结果类别：fresh / inside / unknown / fail（见 `WarmupOutcome`）
+    last_run_state: String,
+    /// 官方返回的当前 5 小时窗口重置时间（unix ms，0=未知）
+    last_reset_ms: i64,
+    /// 待补开时间（unix ms，0=无）：某次开窗落进已有窗口时，排在那个窗口到期后再开一次
+    relay_at_ms: i64,
+    /// 最近的开窗记录（新的在前，最多 `WARMUP_HISTORY_MAX` 条）
+    history: Vec<WarmupRecord>,
 }
 impl Default for ScheduleConfig {
     fn default() -> Self {
@@ -2782,9 +2790,31 @@ impl Default for ScheduleConfig {
             last_run_ms: 0,
             last_run_ok: false,
             last_run_msg: String::new(),
+            last_run_state: String::new(),
+            last_reset_ms: 0,
+            relay_at_ms: 0,
+            history: vec![],
         }
     }
 }
+
+/// 一条开窗记录。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct WarmupRecord {
+    at_ms: i64,
+    /// 来源：「定时 07:00」「补开」「手动」
+    kind: String,
+    /// fresh / inside / unknown / fail / missed
+    state: String,
+    msg: String,
+}
+
+const WARMUP_HISTORY_MAX: usize = 30;
+/// 窗口到期后等多久再补开（给官方重置留余量）。
+const RELAY_DELAY_MS: i64 = 60_000;
+/// 补开时间过了这么久还没跑（电脑睡眠 / app 没开），就放弃这次补开。
+const RELAY_GRACE_MS: i64 = 30 * 60_000;
 
 fn schedule_config_path() -> Option<PathBuf> {
     launcher_config_dir().map(|d| d.join("schedule.json"))
@@ -2832,9 +2862,113 @@ fn ps_single_quote(s: &str) -> String {
 /// 开窗固定用的模型。窗口按账号起算、与模型无关；默认模型（Opus 等）一次要多耗约 60 倍额度。
 const WARMUP_MODEL: &str = "haiku";
 
-/// 同步跑一次开窗（`claude -p <prompt>`），带 120s 超时，返回 (成功?, 简述)。
+/// 一次开窗的结果。
+struct WarmupOutcome {
+    /// 消息是否发出去并拿到回复
+    ok: bool,
+    /// fresh=开出了新窗口；inside=已有窗口在计时，这条落在里面；
+    /// unknown=发出去了但没读到重置时间；fail=失败
+    state: &'static str,
+    msg: String,
+    /// 官方返回的 5 小时窗口重置时间（unix ms，0=没读到）
+    reset_ms: i64,
+}
+
+/// 剩余时长超过这个值就算「刚开的新窗口」。官方把窗口起点往下取整到 10 分钟
+/// （实测 17:10:12 开窗 → 22:10:00 重置，21:15:18 开窗 → 02:10:00 重置），
+/// 所以新窗口剩余必在 4h50m 以上。宁可把新窗口误判成已有窗口（只是多补开一次），
+/// 也别反过来漏掉补开。
+const FRESH_WINDOW_MIN_MS: i64 = (4 * 60 + 50) * 60_000;
+
+/// 从 `claude -p --output-format stream-json --verbose` 的输出里取 5 小时窗口的重置时间
+/// （`rate_limit_event` 事件，官方 CLI 输出），返回 unix ms，没读到返回 0。
+fn parse_five_hour_reset(stdout: &str) -> i64 {
+    let mut reset = 0i64;
+    for line in stdout.lines() {
+        if !line.contains("rate_limit_event") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("type").and_then(|x| x.as_str()) != Some("rate_limit_event") {
+            continue;
+        }
+        let info = &v["rate_limit_info"];
+        let secs = info["unifiedWindows"]["five_hour"]["resetsAt"]
+            .as_f64()
+            .or_else(|| {
+                if info["rateLimitType"].as_str() == Some("five_hour") {
+                    info["resetsAt"].as_f64()
+                } else {
+                    None
+                }
+            });
+        if let Some(s) = secs {
+            reset = (s * 1000.0) as i64;
+        }
+    }
+    reset
+}
+
+/// stream-json 的 `result` 事件若标了 `is_error`，取出错误文本。
+fn parse_result_error(stdout: &str) -> Option<String> {
+    for line in stdout.lines().rev() {
+        if !line.contains("\"result\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if v.get("type").and_then(|x| x.as_str()) != Some("result") {
+            continue;
+        }
+        if v.get("is_error").and_then(|x| x.as_bool()) == Some(true) {
+            let text = v["result"].as_str().unwrap_or("(无错误文本)");
+            return Some(text.chars().take(300).collect());
+        }
+        return None;
+    }
+    None
+}
+
+/// 本地时间显示：今天只给 HH:MM，明天加「次日」，更远给月/日。
+fn fmt_local_hm(ms: i64) -> String {
+    use chrono::{Local, TimeZone};
+    let Some(t) = Local.timestamp_millis_opt(ms).single() else {
+        return "?".into();
+    };
+    let today = Local::now().date_naive();
+    let d = t.date_naive();
+    if d == today {
+        t.format("%H:%M").to_string()
+    } else if Some(d) == today.succ_opt() {
+        format!("次日 {}", t.format("%H:%M"))
+    } else {
+        t.format("%m/%d %H:%M").to_string()
+    }
+}
+
+/// 根据重置时间判断这次开窗的结果类别和文案。
+fn classify_warmup(reset_ms: i64, now: i64) -> (&'static str, String) {
+    if reset_ms <= 0 {
+        return ("unknown", "消息已发送，但没读到窗口重置时间".into());
+    }
+    let at = fmt_local_hm(reset_ms);
+    if reset_ms - now >= FRESH_WINDOW_MIN_MS {
+        ("fresh", format!("开窗成功，新窗口 {at} 重置"))
+    } else {
+        (
+            "inside",
+            format!("已有窗口在计时（{at} 重置），这次没开新窗口，到点自动补开"),
+        )
+    }
+}
+
+/// 同步跑一次开窗（`claude -p <prompt>`），带 120s 超时。
 /// 复用启动器的代理 pre_cmd——开窗要发网络请求，挂代理后用户才连得上。
-fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, String) {
+/// 用 stream-json 输出读官方返回的窗口重置时间，据此判断是否真开出了新窗口。
+fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> WarmupOutcome {
     let p = if prompt.trim().is_empty() {
         "ok"
     } else {
@@ -2845,7 +2979,9 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     // 产生的「ok→OK」垃圾会话 jsonl，避免污染会话列表（曹少 2026-07-03）。
     // uuid 仅含 [0-9a-f-]，直接拼进命令无注入风险。
     let session_id = uuid::Uuid::new_v4().to_string();
-    let base = format!("claude -p --model {WARMUP_MODEL} --session-id {session_id}");
+    let base = format!(
+        "claude -p --model {WARMUP_MODEL} --session-id {session_id} --output-format stream-json --verbose"
+    );
 
     #[cfg(windows)]
     let mut cmd = {
@@ -2883,33 +3019,42 @@ fn run_warmup(prompt: &str, pre_cmd_enabled: bool, pre_cmd: &str) -> (bool, Stri
     std::thread::spawn(move || {
         let _ = tx.send(cmd.output());
     });
+    let fail = |msg: String| WarmupOutcome {
+        ok: false,
+        state: "fail",
+        msg,
+        reset_ms: 0,
+    };
     match rx.recv_timeout(Duration::from_secs(120)) {
         Ok(Ok(o)) => {
-            if o.status.success() {
-                let cleaned = delete_warmup_session(&session_id);
-                let tail = if cleaned { "，已自动清理预热会话" } else { "" };
-                (
-                    true,
-                    format!("开窗成功：已发送一条消息，5 小时窗口开始计时{tail}"),
-                )
-            } else {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            if !o.status.success() {
                 let err = String::from_utf8_lossy(&o.stderr);
                 let snippet: String = err.trim().chars().take(300).collect();
-                (
-                    false,
-                    format!(
-                        "claude 返回非 0：{}",
-                        if snippet.is_empty() {
-                            "(无错误输出，确认已登录 claude 且代理可用)".into()
-                        } else {
-                            snippet
-                        }
-                    ),
-                )
+                let detail = if !snippet.is_empty() {
+                    snippet
+                } else if let Some(e) = parse_result_error(&stdout) {
+                    e
+                } else {
+                    "(无错误输出，确认已登录 claude 且代理可用)".into()
+                };
+                return fail(format!("claude 返回非 0：{detail}"));
+            }
+            if let Some(e) = parse_result_error(&stdout) {
+                return fail(format!("claude 报错：{e}"));
+            }
+            delete_warmup_session(&session_id);
+            let reset_ms = parse_five_hour_reset(&stdout);
+            let (state, msg) = classify_warmup(reset_ms, now_ms());
+            WarmupOutcome {
+                ok: true,
+                state,
+                msg,
+                reset_ms,
             }
         }
-        Ok(Err(e)) => (false, format!("无法启动 claude：{e}")),
-        Err(_) => (false, "开窗超时（120 秒未返回）".to_string()),
+        Ok(Err(e)) => fail(format!("无法启动 claude：{e}")),
+        Err(_) => fail("开窗超时（120 秒未返回）".to_string()),
     }
 }
 
@@ -2937,26 +3082,132 @@ fn delete_warmup_session(session_id: &str) -> bool {
     false
 }
 
-fn record_warmup_result(ok: bool, msg: &str) {
+/// 记一条开窗记录（按时间新的在前，超出上限的丢掉）。
+fn push_history(cfg: &mut ScheduleConfig, rec: WarmupRecord) {
+    cfg.history.push(rec);
+    cfg.history.sort_by(|a, b| b.at_ms.cmp(&a.at_ms));
+    cfg.history.truncate(WARMUP_HISTORY_MAX);
+}
+
+/// 把一次开窗结果写进配置：上次结果、窗口重置时间、开窗记录，并决定要不要补开。
+fn record_warmup_result(kind: &str, out: &WarmupOutcome) {
     let mut cfg = load_schedule_config();
-    cfg.last_run_ms = now_ms();
-    cfg.last_run_ok = ok;
-    cfg.last_run_msg = msg.to_string();
+    let now = now_ms();
+    cfg.last_run_ms = now;
+    cfg.last_run_ok = out.ok;
+    cfg.last_run_msg = out.msg.clone();
+    cfg.last_run_state = out.state.to_string();
+    if out.reset_ms > 0 {
+        cfg.last_reset_ms = out.reset_ms;
+    }
+    match out.state {
+        // 落进了已有窗口：排在那个窗口到期后补开一次，让窗口接上
+        "inside" if out.reset_ms > now => cfg.relay_at_ms = out.reset_ms + RELAY_DELAY_MS,
+        // 开出了新窗口：之前排的补开作废
+        "fresh" => cfg.relay_at_ms = 0,
+        _ => {}
+    }
+    push_history(
+        &mut cfg,
+        WarmupRecord {
+            at_ms: now,
+            kind: kind.to_string(),
+            state: out.state.to_string(),
+            msg: out.msg.clone(),
+        },
+    );
     let _ = save_schedule_config(&cfg);
 }
 
-/// 后台调度线程：每 30s 醒一次，比对本地时间与各启用触发点，命中即开窗。
-/// 按「分钟键」去重，确保同一时刻只触发一次。
+/// 跑一次开窗并落记录。
+fn perform_warmup(kind: &str) -> WarmupOutcome {
+    let cfg = load_schedule_config();
+    let lc = load_launcher_config();
+    let out = run_warmup(&cfg.warmup_prompt, lc.pre_cmd_enabled, &lc.pre_cmd);
+    record_warmup_result(kind, &out);
+    out
+}
+
+fn notify_warmup(app: &tauri::AppHandle, out: &WarmupOutcome) {
+    let title = match out.state {
+        "fresh" => "⏰ Claude 5 小时窗口已开启",
+        "inside" => "⏰ 已有窗口在计时，到点自动补开",
+        "unknown" => "⏰ 开窗消息已发送",
+        _ => "⚠️ 定时开窗失败",
+    };
+    let _ = app
+        .notification()
+        .builder()
+        .title(title)
+        .body(out.msg.as_str())
+        .show();
+}
+
+/// 调度线程被挂起过（电脑睡眠）时，把 (from, to) 之间该跑没跑的触发点记进开窗记录。
+fn record_missed_triggers(
+    cfg: &ScheduleConfig,
+    from: chrono::DateTime<chrono::Local>,
+    to: chrono::DateTime<chrono::Local>,
+) {
+    use chrono::{Datelike, Local, NaiveTime};
+    let mut missed: Vec<WarmupRecord> = vec![];
+    let mut day = from.date_naive();
+    let last_day = to.date_naive();
+    let mut guard = 0;
+    while day <= last_day && guard < 8 {
+        guard += 1;
+        let weekday = day.weekday().num_days_from_monday() as u8;
+        for t in cfg.triggers.iter().filter(|t| t.enabled) {
+            if !t.days.is_empty() && !t.days.contains(&weekday) {
+                continue;
+            }
+            let Ok(tm) = NaiveTime::parse_from_str(&t.time, "%H:%M") else {
+                continue;
+            };
+            let Some(at) = day.and_time(tm).and_local_timezone(Local).single() else {
+                continue;
+            };
+            // 落在当前这一分钟的触发点交给正常流程去跑，不算错过
+            if at > from && at <= to - chrono::Duration::seconds(60) {
+                missed.push(WarmupRecord {
+                    at_ms: at.timestamp_millis(),
+                    kind: format!("定时 {}", t.time),
+                    state: "missed".into(),
+                    msg: "电脑在睡眠，这次没跑".into(),
+                });
+            }
+        }
+        let Some(next) = day.succ_opt() else { break };
+        day = next;
+    }
+    if missed.is_empty() {
+        return;
+    }
+    let mut cfg = load_schedule_config();
+    for r in missed {
+        push_history(&mut cfg, r);
+    }
+    let _ = save_schedule_config(&cfg);
+}
+
+/// 后台调度线程：每 30s 醒一次，比对本地时间与各启用触发点，命中即开窗；
+/// 再看有没有到点的补开。按「分钟键」去重，确保同一时刻只触发一次。
 fn scheduler_loop(app: tauri::AppHandle) {
     use chrono::{Datelike, Local};
     let mut last_fired: HashMap<String, String> = HashMap::new();
+    let mut last_tick = Local::now();
     loop {
         std::thread::sleep(Duration::from_secs(30));
+        let now = Local::now();
+        let prev_tick = std::mem::replace(&mut last_tick, now);
         let cfg = load_schedule_config();
         if !cfg.enabled {
             continue;
         }
-        let now = Local::now();
+        // 两次 tick 间隔远超 30s = 进程被挂起过（电脑睡眠），补记这段时间错过的触发点
+        if (now - prev_tick).num_seconds() > 120 {
+            record_missed_triggers(&cfg, prev_tick, now);
+        }
         let hm = now.format("%H:%M").to_string();
         let minute_key = now.format("%Y-%m-%d %H:%M").to_string();
         let weekday = now.weekday().num_days_from_monday() as u8; // 0=周一
@@ -2971,21 +3222,33 @@ fn scheduler_loop(app: tauri::AppHandle) {
                 continue;
             }
             last_fired.insert(t.id.clone(), minute_key.clone());
+            let out = perform_warmup(&format!("定时 {}", t.time));
+            notify_warmup(&app, &out);
+        }
 
-            let lc = load_launcher_config();
-            let (ok, msg) = run_warmup(&cfg.warmup_prompt, lc.pre_cmd_enabled, &lc.pre_cmd);
-            record_warmup_result(ok, &msg);
-            let title = if ok {
-                "⏰ Claude 5 小时窗口已开启"
-            } else {
-                "⚠️ 定时开窗失败"
-            };
-            let _ = app
-                .notification()
-                .builder()
-                .title(title)
-                .body(msg.as_str())
-                .show();
+        // 补开：先清掉待补开再跑，失败也不会每 30 秒重试
+        let mut cfg = load_schedule_config();
+        let now_ms = now_ms();
+        if cfg.relay_at_ms > 0 && now_ms >= cfg.relay_at_ms {
+            let due = cfg.relay_at_ms;
+            cfg.relay_at_ms = 0;
+            let stale = now_ms - due > RELAY_GRACE_MS;
+            if stale {
+                push_history(
+                    &mut cfg,
+                    WarmupRecord {
+                        at_ms: due,
+                        kind: "补开".into(),
+                        state: "missed".into(),
+                        msg: "电脑在睡眠或 app 没开，这次没跑".into(),
+                    },
+                );
+            }
+            let _ = save_schedule_config(&cfg);
+            if !stale {
+                let out = perform_warmup("补开");
+                notify_warmup(&app, &out);
+            }
         }
     }
 }
@@ -3075,17 +3338,18 @@ fn schedule_toggle_trigger(id: String, enabled: bool) -> Result<ScheduleConfig, 
     Ok(cfg)
 }
 
-/// 立即手动开窗一次（测试用），同步返回最新配置（含 last_run_*）。失败抛错。
+/// 立即手动开窗一次（测试用），返回最新配置（含 last_run_* 与开窗记录）。失败抛错。
+/// 要跑十来秒，放后台线程，不卡界面。
 #[tauri::command]
-fn schedule_run_now() -> Result<ScheduleConfig, String> {
-    let cfg = load_schedule_config();
-    let lc = load_launcher_config();
-    let (ok, msg) = run_warmup(&cfg.warmup_prompt, lc.pre_cmd_enabled, &lc.pre_cmd);
-    record_warmup_result(ok, &msg);
-    if !ok {
-        return Err(msg);
-    }
-    Ok(load_schedule_config())
+async fn schedule_run_now() -> Result<ScheduleConfig, String> {
+    off_main(|| {
+        let out = perform_warmup("手动");
+        if !out.ok {
+            return Err(out.msg);
+        }
+        Ok(load_schedule_config())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3962,6 +4226,45 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 取自 2026-11-08 实测 `claude -p --output-format stream-json --verbose` 的输出
+    const RATE_LINE: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1794161400,"rateLimitType":"five_hour","overageStatus":"rejected","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.09,"resetsAt":1794161400,"status":"allowed"},"seven_day":{"utilization":0.12,"resetsAt":1794650400,"status":"allowed"}}},"session_id":"x"}"#;
+
+    #[test]
+    fn warmup_parse_reset() {
+        let out = format!("{{\"type\":\"system\",\"subtype\":\"init\"}}\n{RATE_LINE}\n{{\"type\":\"result\",\"is_error\":false,\"result\":\"OK\"}}\n");
+        assert_eq!(parse_five_hour_reset(&out), 1_794_161_400_000);
+        assert_eq!(parse_result_error(&out), None);
+        assert_eq!(parse_five_hour_reset("{\"type\":\"result\"}\n"), 0);
+        // 只有旧字段、没有 unifiedWindows 也能读
+        let old = r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":1794161400,"rateLimitType":"five_hour"}}"#;
+        assert_eq!(parse_five_hour_reset(old), 1_794_161_400_000);
+        // 七天窗口的事件不能当成 5 小时窗口
+        let week = r#"{"type":"rate_limit_event","rate_limit_info":{"resetsAt":1794650400,"rateLimitType":"seven_day"}}"#;
+        assert_eq!(parse_five_hour_reset(week), 0);
+    }
+
+    #[test]
+    fn warmup_result_error() {
+        let out = r#"{"type":"result","is_error":true,"result":"API Error: Connection dropped (ECONNRESET)."}"#;
+        assert_eq!(
+            parse_result_error(out).as_deref(),
+            Some("API Error: Connection dropped (ECONNRESET).")
+        );
+    }
+
+    #[test]
+    fn warmup_classify() {
+        let reset = 1_794_161_400_000i64; // 02:10
+        let at = |h: i64, m: i64, s: i64| reset - ((h * 3600 + m * 60 + s) * 1000);
+        // 剩 4:59:48（17:10:12 开窗 → 22:10 重置）：新窗口
+        assert_eq!(classify_warmup(reset, at(4, 59, 48)).0, "fresh");
+        // 剩 4:54:42（21:15:18 开窗 → 02:10 重置）：新窗口
+        assert_eq!(classify_warmup(reset, at(4, 54, 42)).0, "fresh");
+        // 剩 4:45:15（21:24:45 查询，窗口 21:15 已被开过）：已有窗口
+        assert_eq!(classify_warmup(reset, at(4, 45, 15)).0, "inside");
+        assert_eq!(classify_warmup(0, reset).0, "unknown");
+    }
 
     #[test]
     fn version_gt_basic() {

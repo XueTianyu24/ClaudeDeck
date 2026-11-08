@@ -5,6 +5,19 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.12.12] - 2026-11-08
+
+### 修复
+- **定时开窗不再"假成功"**：以前只要 `claude -p` 正常退出就显示"开窗成功"，但如果触发时已经有窗口在计时（比如你自己先用了 Claude），这条消息只会落进旧窗口，并没有开出新窗口。实测 11/8：14:13 自己用 Claude 开了窗口，17:10 定时开窗显示成功，实际没开新窗口；那个窗口 19:10 到期后一直空着，直到 21:15 才因为再次使用开了新窗口。
+  - **读官方重置时间**：开窗改用 `--output-format stream-json --verbose`，从官方 CLI 输出的 `rate_limit_event` 里读当前 5 小时窗口的重置时间。剩余超过 4 小时 50 分算新开的窗口（官方把窗口起点往下取整到 10 分钟），否则就是落进了已有窗口。
+  - **自动补开**：落进已有窗口时，排在那个窗口到期 1 分钟后补开一次，让窗口接上。补开时间过了 30 分钟还没跑（电脑睡眠或 app 没开）就放弃，不会在奇怪的时间突然开窗。
+  - **结果如实显示**：面板显示"当前窗口几点重置""几点自动补开"；上次结果按类别着色（新窗口、已有窗口、失败）。
+  - **开窗记录**：面板里新增可展开的开窗记录（最近 30 次），包括定时、补开、手动三种来源。电脑睡眠期间错过的触发点也会补记一条，不再无声无息地漏掉。
+  - 「立即开窗一次」改为在后台线程执行，点了不会卡住界面。
+  - 关键改动：`src-tauri/src/lib.rs`（`WarmupOutcome` / `parse_five_hour_reset` / `classify_warmup` / `record_missed_triggers`，`ScheduleConfig` 新增 `last_reset_ms` / `relay_at_ms` / `history`，`scheduler_loop` 加补开与睡眠补记）、`src/WarmupScheduler.tsx`、`src/App.css`。
+
+> 验证：`cargo test --lib` 21/21 通过（新增 `warmup_parse_reset` / `warmup_result_error` / `warmup_classify`，用例取自本机实测输出）、`tsc --noEmit` 通过；新包真机跑 22:10 定时触发，22:10:28 记下"已有窗口在计时（次日 02:10 重置）"，排好 02:11 补开，开窗记录有这一条，预热会话照常清理。
+
 ## [0.12.11] - 2026-11-03
 
 ### 优化
